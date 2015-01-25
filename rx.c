@@ -63,7 +63,7 @@ main(int argc, char *argv[])
 	struct bpf_program bpfprogram;
 	char * szProgram = "", fBrokenSocket = 0;
 	u16 u16HeaderLen;
-	uint32_t last_seq_nr = 0;
+	uint32_t last_seq_nr = -1;
 
 
 	while (1) {
@@ -218,8 +218,29 @@ main(int argc, char *argv[])
 			write(STDOUT_FILENO, pu8Payload, bytes);
 
 			//whops, we lost some packets
-			if(seq_nr - last_seq_nr > 1)
-				fprintf(stderr, "sequence break detected! Missed %d packets\n", seq_nr - last_seq_nr);
+			if(seq_nr - last_seq_nr > 1){
+				static int start_of_last_sequence_break = -1;
+				static int cum_sent = 0, cum_lost = 0;	
+
+				//if we have already received packets
+				if(last_seq_nr != -1) {
+					int sent_packet_count, lost_packet_count;
+					float current_lpr;
+
+					sent_packet_count = seq_nr - start_of_last_sequence_break;
+					lost_packet_count = seq_nr - last_seq_nr - 1;
+					current_lpr = 1.0 * lost_packet_count / sent_packet_count;
+
+					cum_sent += sent_packet_count;
+					cum_lost += lost_packet_count;
+
+					fprintf(stderr, "Sent: %d\tLost: %d\tcurr LPR: %f\tavg LPR: %f\n", sent_packet_count, lost_packet_count, current_lpr, 1.0 * cum_lost / cum_sent);
+				}
+
+				start_of_last_sequence_break = seq_nr;
+
+			}
+			
 			last_seq_nr = seq_nr;
 		}
 	}
