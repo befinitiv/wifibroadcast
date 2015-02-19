@@ -15,6 +15,8 @@
  *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include <time.h>
+
 
 #include "wifibroadcast.h"
 
@@ -87,6 +89,7 @@ main(int argc, char *argv[])
 	char szHostname[PATH_MAX];
 	int pcnt = 0;
 	int packet_length = 512;
+	time_t start_time;
 
 	if (gethostname(szHostname, sizeof (szHostname) - 1)) {
 		perror("unable to get hostname");
@@ -149,6 +152,7 @@ main(int argc, char *argv[])
 
 	memset(u8aSendBuffer, 0, sizeof (u8aSendBuffer));
 
+ start_time = time(NULL);
  while (!fBrokenSocket) {
 		u8 * pu8 = u8aSendBuffer;
 		int rep;
@@ -188,9 +192,10 @@ main(int argc, char *argv[])
 		}
 		}
 
-		if(pcnt % 64 == 0)
-			printf("%d\n", pcnt);
-		
+		if(pcnt % 64 == 0) {
+			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt * nRep / (time(NULL) - start_time));
+		}
+
 		pcnt++;
 	}
 
