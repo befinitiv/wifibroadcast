@@ -1,5 +1,5 @@
 From 4d02539ecd8b417b7efcc0ebc7617fe11c394085 Mon Sep 17 00:00:00 2001
-From: befinitiv <nono@never.xx>
+From: befinitiv <nono@never.com>
 Date: Thu, 19 Feb 2015 20:27:36 +0100
 Subject: [PATCH] fixed channel power of ath9k driver to 20dbm
 
