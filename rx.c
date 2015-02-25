@@ -69,8 +69,8 @@ main(int argc, char *argv[])
 	char szProgram[512], fBrokenSocket = 0;
 	u16 u16HeaderLen;
 	packet_buffer_t *packet_buffer_list;
-	uint32_t last_block_num = -1;
-	int num_received = 0, num_lost = 0;
+	int last_block_num = -1;
+	int num_sent = 0, num_lost = 0;
 	int i;
 	int param_port = 0;
 	int param_retransmission_block_size = 1;
@@ -239,31 +239,38 @@ main(int argc, char *argv[])
 //printf("got blocknono %d (last: %d)\n", block_num, last_block_num);
 
 		//if we received the start of a new block, we need to write out the old one
-		if(block_num != last_block_num) { //TODO: and FCS correct
+		if(block_num != last_block_num && last_block_num >= 0) { //TODO: and FCS correct
 
 			//write out block
 			for(i=0; i<param_retransmission_block_size; ++i) {
 				packet_buffer_t *p = packet_buffer_list + i;
+				num_sent++;
 				if(p->valid) {
-					num_received++;
 					write(STDOUT_FILENO, p->data, p->len);
 				}
 				else {
-					fprintf(stderr, "Lost a packet! Lossrate: %f\t(%d / %d)\n", 1.0 * num_lost/num_received, num_lost, num_received);
+					fprintf(stderr, "Lost a packet! Lossrate: %f\t(%d / %d)\n", 1.0 * num_lost/num_sent, num_lost, num_sent);
 					num_lost++;
 				}
 
 				p->valid = 0;
 				p->len = 0;
-			}		
-			last_block_num = block_num;
+			}
+			if(block_num > last_block_num + 1) {
+				int lost_blocks = block_num - last_block_num - 1;
+				num_lost += lost_blocks * param_retransmission_block_size;
+				num_sent += lost_blocks * param_retransmission_block_size;
+				fprintf(stderr, "Lost %d blocks! Lossrate %f\t(%d / %d)\n", block_num - last_block_num - 1, 1.0 * num_lost/num_sent, num_lost, num_sent);
+			}
 		}
+				
+		last_block_num = block_num;
 		
 		packet_num = seq_nr % param_retransmission_block_size;
 //printf("got packetnum %d\n", packet_num);
 
 		//if the checksum is correct or it is still unitialized, then save the packet
-		if(/*FCS correct || */packet_buffer_list[packet_num].valid == 0) {
+		if(/*TODO: FCS correct || */packet_buffer_list[packet_num].valid == 0) {
 			memcpy(packet_buffer_list[packet_num].data, pu8Payload, bytes);
 			packet_buffer_list[packet_num].len = bytes;
 			packet_buffer_list[packet_num].valid = 1;
