@@ -34,7 +34,11 @@ static const u8 u8aRadiotapHeader[] = {
 
 /* Penumbra IEEE80211 header */
 
-static const u8 u8aIeeeHeader[] = {
+//the last byte of the mac address is recycled as a port number
+#define SRC_MAC_LASTBYTE 15
+#define DST_MAC_LASTBYTE 21
+
+static u8 u8aIeeeHeader[] = {
 	0x08, 0x01, 0x00, 0x00,
 	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 	0x13, 0x22, 0x33, 0x44, 0x55, 0x66,
@@ -66,8 +70,9 @@ usage(void)
 	    "(c)2015 befinitiv. Based on packetspammer by Andy Green.  Licensed under GPL2\n"
 	    "\n"
 	    "Usage: tx [options] <interface>\n\nOptions\n"
-	    "-r <count> Number of retransmissions\n\n"
-	    "-f <bytes> Maximum number of bytes per frame\n"
+	    "-r <count> Number of retransmissions (default 3)\n\n"
+	    "-f <bytes> Maximum number of bytes per frame (default 512)\n"
+			"-p <port> Port number 0-255 (default 0)\n"
 	    "Example:\n"
 	    "  echo -n mon0 > /sys/class/ieee80211/phy0/add_iface\n"
 	    "  iwconfig mon0 mode monitor\n"
@@ -83,13 +88,15 @@ main(int argc, char *argv[])
 {
 	u8 u8aSendBuffer[4096];
 	char szErrbuf[PCAP_ERRBUF_SIZE];
-	int r, nRep = 3;
+	int r;
 	pcap_t *ppcap = NULL;
 	char fBrokenSocket = 0;
 	char szHostname[PATH_MAX];
 	int pcnt = 0;
-	int packet_length = 512;
 	time_t start_time;
+	int param_num_retr = 3;
+	int param_packet_length = 512;
+	int param_port = 0;
 
 	if (gethostname(szHostname, sizeof (szHostname) - 1)) {
 		perror("unable to get hostname");
@@ -105,7 +112,7 @@ main(int argc, char *argv[])
 			{ "help", no_argument, &flagHelp, 1 },
 			{ 0, 0, 0, 0 }
 		};
-		int c = getopt_long(argc, argv, "r:hf:",
+		int c = getopt_long(argc, argv, "r:hf:p:",
 			optiona, &nOptionIndex);
 
 		if (c == -1)
@@ -118,11 +125,15 @@ main(int argc, char *argv[])
 			usage();
 
 		case 'r': // retransmissions
-			nRep = atoi(optarg);
+			param_num_retr = atoi(optarg);
 			break;
 
 		case 'f': // MTU
-			packet_length = atoi(optarg);
+			param_packet_length = atoi(optarg);
+			break;
+
+		case 'p': //port
+			param_port = atoi(optarg);
 			break;
 
 		default:
@@ -152,6 +163,9 @@ main(int argc, char *argv[])
 
 	memset(u8aSendBuffer, 0, sizeof (u8aSendBuffer));
 
+	u8aIeeeHeader[SRC_MAC_LASTBYTE] = param_port;
+	u8aIeeeHeader[DST_MAC_LASTBYTE] = param_port;
+
  start_time = time(NULL);
  while (!fBrokenSocket) {
 		u8 * pu8 = u8aSendBuffer;
@@ -175,7 +189,7 @@ main(int argc, char *argv[])
 		*(uint32_t*)pu8 = pcnt;
 		pu8 += 4;
 
-		inl = read(STDIN_FILENO, inp_data, packet_length);
+		inl = read(STDIN_FILENO, inp_data, param_packet_length);
 		if(inl < 0 || inl > sizeof(inp_data)){
 			perror("reading stdin");
 			return 1;
@@ -184,7 +198,7 @@ main(int argc, char *argv[])
 		memcpy(pu8, inp_data, inl);
 		pu8 += inl;
 
-		for(rep=0; rep < nRep; ++rep) {
+		for(rep=0; rep < param_num_retr; ++rep) {
 		r = pcap_inject(ppcap, u8aSendBuffer, pu8 - u8aSendBuffer);
 		if (r != (pu8-u8aSendBuffer)) {
 			printf("Trouble injecting packet");
@@ -193,7 +207,7 @@ main(int argc, char *argv[])
 		}
 
 		if(pcnt % 64 == 0) {
-			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt * nRep / (time(NULL) - start_time));
+			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt * param_num_retr / (time(NULL) - start_time));
 		}
 
 		pcnt++;
