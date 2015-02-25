@@ -235,13 +235,14 @@ main(int argc, char *argv[])
 
 //printf("got seqno %d\n", seq_nr);
 
-		block_num = seq_nr / param_retransmission_block_size;
+		block_num = seq_nr / param_retransmission_block_size;//if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
+
 //printf("got blocknono %d (last: %d)\n", block_num, last_block_num);
 
 		//if we received the start of a new block, we need to write out the old one
 		if(block_num != last_block_num && last_block_num >= 0) { //TODO: and FCS correct
 
-			//write out block
+			//write out old block
 			for(i=0; i<param_retransmission_block_size; ++i) {
 				packet_buffer_t *p = packet_buffer_list + i;
 				num_sent++;
@@ -266,7 +267,7 @@ main(int argc, char *argv[])
 				
 		last_block_num = block_num;
 		
-		packet_num = seq_nr % param_retransmission_block_size;
+		packet_num = seq_nr % param_retransmission_block_size; //if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
 //printf("got packetnum %d\n", packet_num);
 
 		//if the checksum is correct or it is still unitialized, then save the packet
