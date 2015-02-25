@@ -16,9 +16,12 @@
  */
 
 
+
+#include "lib.h"
 #include "wifibroadcast.h"
 #include "radiotap.h"
 
+#define MAX_PACKET_LENGTH 4192
 
 // this is where we store a summary of the
 // information from the radiotap header
@@ -42,6 +45,8 @@ usage(void)
 	    "(c)2015 befinitiv. Based on packetspammer by Andy Green.  Licensed under GPL2\n"
 	    "\n"
 	    "Usage: rx [options] <interface>\n\nOptions\n"
+			"-p <port> Port number 0-255 (default 0)\n"
+			"-b <blocksize> Number of packets in a retransmission block (default 1). Needs to match with tx.\n"
 	    "Example:\n"
 	    "  echo -n mon0 > /sys/class/ieee80211/phy0/add_iface\n"
 	    "  iwconfig mon0 mode monitor\n"
@@ -55,7 +60,7 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
-	u8 u8aSendBuffer[4096];
+	u8 u8aSendBuffer[MAX_PACKET_LENGTH];
 	char szErrbuf[PCAP_ERRBUF_SIZE];
 	int n80211HeaderLength = 0, nLinkEncap = 0;
 	int retval, bytes;
@@ -63,8 +68,12 @@ main(int argc, char *argv[])
 	struct bpf_program bpfprogram;
 	char szProgram[512], fBrokenSocket = 0;
 	u16 u16HeaderLen;
-	uint32_t last_seq_nr = -1;
+	packet_buffer_t *packet_buffer_list;
+	uint32_t last_block_num = -1;
+	int num_received = 0, num_lost = 0;
+	int i;
 	int param_port = 0;
+	int param_retransmission_block_size = 1;
 
 
 	while (1) {
@@ -73,7 +82,7 @@ main(int argc, char *argv[])
 			{ "help", no_argument, &flagHelp, 1 },
 			{ 0, 0, 0, 0 }
 		};
-		int c = getopt_long(argc, argv, "hp:",
+		int c = getopt_long(argc, argv, "hp:b:",
 			optiona, &nOptionIndex);
 
 		if (c == -1)
@@ -87,6 +96,10 @@ main(int argc, char *argv[])
 
 		case 'p': //port
 			param_port = atoi(optarg);
+			break;
+		
+		case 'b': //retransmission block size
+			param_retransmission_block_size = atoi(optarg);
 			break;
 
 		default:
@@ -146,7 +159,7 @@ main(int argc, char *argv[])
 	}
 
 
-	memset(u8aSendBuffer, 0, sizeof (u8aSendBuffer));
+	packet_buffer_list = lib_alloc_packet_buffer_list(param_retransmission_block_size, MAX_PACKET_LENGTH);
 
 	while (!fBrokenSocket) {
 		struct pcap_pkthdr * ppcapPacketHeader = NULL;
@@ -155,6 +168,8 @@ main(int argc, char *argv[])
 		u8 * pu8Payload = u8aSendBuffer;
 		int n;
 		uint32_t seq_nr;
+		int block_num;
+		int packet_num;
 		// receive
 
 		retval = pcap_next_ex(ppcap, &ppcapPacketHeader,
@@ -218,36 +233,42 @@ main(int argc, char *argv[])
 		pu8Payload += 4;
 		bytes -= 4;
 
-		//if we receive a new sequence number, we dump the content of the packet
-		if(seq_nr != last_seq_nr) {
-			write(STDOUT_FILENO, pu8Payload, bytes);
+//printf("got seqno %d\n", seq_nr);
 
-			//whops, we lost some packets
-			if(seq_nr - last_seq_nr > 1){
-				static int start_of_last_sequence_break = -1;
-				static int cum_sent = 0, cum_lost = 0;	
+		block_num = seq_nr / param_retransmission_block_size;
+//printf("got blocknono %d (last: %d)\n", block_num, last_block_num);
 
-				//if we have already received packets
-				if(last_seq_nr != -1) {
-					int sent_packet_count, lost_packet_count;
-					float current_lpr;
+		//if we received the start of a new block, we need to write out the old one
+		if(block_num != last_block_num) { //TODO: and FCS correct
 
-					sent_packet_count = seq_nr - start_of_last_sequence_break;
-					lost_packet_count = seq_nr - last_seq_nr - 1;
-					current_lpr = 1.0 * lost_packet_count / sent_packet_count;
-
-					cum_sent += sent_packet_count;
-					cum_lost += lost_packet_count;
-
-					fprintf(stderr, "Sent: %d\tLost: %d\tcurr LPR: %f\tavg LPR: %f\n", sent_packet_count, lost_packet_count, current_lpr, 1.0 * cum_lost / cum_sent);
+			//write out block
+			for(i=0; i<param_retransmission_block_size; ++i) {
+				packet_buffer_t *p = packet_buffer_list + i;
+				if(p->valid) {
+					num_received++;
+					write(STDOUT_FILENO, p->data, p->len);
+				}
+				else {
+					fprintf(stderr, "Lost a packet! Lossrate: %f\t(%d / %d)\n", 1.0 * num_lost/num_received, num_lost, num_received);
+					num_lost++;
 				}
 
-				start_of_last_sequence_break = seq_nr;
-
-			}
-			
-			last_seq_nr = seq_nr;
+				p->valid = 0;
+				p->len = 0;
+			}		
+			last_block_num = block_num;
 		}
+		
+		packet_num = seq_nr % param_retransmission_block_size;
+//printf("got packetnum %d\n", packet_num);
+
+		//if the checksum is correct or it is still unitialized, then save the packet
+		if(/*FCS correct || */packet_buffer_list[packet_num].valid == 0) {
+			memcpy(packet_buffer_list[packet_num].data, pu8Payload, bytes);
+			packet_buffer_list[packet_num].len = bytes;
+			packet_buffer_list[packet_num].valid = 1;
+		}
+
 	}
 
 

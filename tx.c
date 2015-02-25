@@ -75,7 +75,7 @@ usage(void)
 	    "-r <count> Number of retransmissions (default 3)\n\n"
 	    "-f <bytes> Maximum number of bytes per frame (default 512)\n"
 			"-p <port> Port number 0-255 (default 0)\n"
-			"-b <blocksize> Number of packets in a retransmission block (default 1)\n"
+			"-b <blocksize> Number of packets in a retransmission block (default 1). Needs to match with rx.\n"
 	    "Example:\n"
 	    "  echo -n mon0 > /sys/class/ieee80211/phy0/add_iface\n"
 	    "  iwconfig mon0 mode monitor\n"
@@ -202,7 +202,7 @@ main(int argc, char *argv[])
 			pu8 += 4;
 
 			inl = read(STDIN_FILENO, pu8, param_packet_length);
-			if(inl < 0){
+			if(inl < 0 || inl > param_packet_length){
 				perror("reading stdin");
 				return 1;
 			}
