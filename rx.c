@@ -61,9 +61,10 @@ main(int argc, char *argv[])
 	int retval, bytes;
 	pcap_t *ppcap = NULL;
 	struct bpf_program bpfprogram;
-	char * szProgram = "", fBrokenSocket = 0;
+	char szProgram[512], fBrokenSocket = 0;
 	u16 u16HeaderLen;
 	uint32_t last_seq_nr = -1;
+	int param_port = 0;
 
 
 	while (1) {
@@ -72,7 +73,7 @@ main(int argc, char *argv[])
 			{ "help", no_argument, &flagHelp, 1 },
 			{ 0, 0, 0, 0 }
 		};
-		int c = getopt_long(argc, argv, "h",
+		int c = getopt_long(argc, argv, "hp:",
 			optiona, &nOptionIndex);
 
 		if (c == -1)
@@ -83,6 +84,10 @@ main(int argc, char *argv[])
 
 		case 'h': // help
 			usage();
+
+		case 'p': //port
+			param_port = atoi(optarg);
+			break;
 
 		default:
 			fprintf(stderr, "unknown switch %c\n", c);
@@ -112,13 +117,13 @@ main(int argc, char *argv[])
 		case DLT_PRISM_HEADER:
 			fprintf(stderr, "DLT_PRISM_HEADER Encap\n");
 			n80211HeaderLength = 0x20; // ieee80211 comes after this
-			szProgram = "radio[0x4a:4]==0x13223344";
+			sprintf(szProgram, "radio[0x4a:4]==0x13223344 && radio[0x4e:2] == 0x55%.2x", param_port);
 			break;
 
 		case DLT_IEEE802_11_RADIO:
 			fprintf(stderr, "DLT_IEEE802_11_RADIO Encap\n");
 			n80211HeaderLength = 0x18; // ieee80211 comes after this
-			szProgram = "ether[0x0a:4]==0x13223344";
+			sprintf(szProgram, "ether[0x0a:4]==0x13223344 && ether[0x0e:2] == 0x55%.2x", param_port);
 			break;
 
 		default:
