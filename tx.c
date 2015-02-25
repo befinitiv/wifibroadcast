@@ -17,8 +17,10 @@
 
 #include <time.h>
 
-
+#include "lib.h"
 #include "wifibroadcast.h"
+
+#define MAX_PACKET_LENGTH 4192
 
 /* this is the template radiotap header we send packets out with */
 
@@ -73,6 +75,7 @@ usage(void)
 	    "-r <count> Number of retransmissions (default 3)\n\n"
 	    "-f <bytes> Maximum number of bytes per frame (default 512)\n"
 			"-p <port> Port number 0-255 (default 0)\n"
+			"-b <blocksize> Number of packets in a retransmission block (default 1)\n"
 	    "Example:\n"
 	    "  echo -n mon0 > /sys/class/ieee80211/phy0/add_iface\n"
 	    "  iwconfig mon0 mode monitor\n"
@@ -86,17 +89,20 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
-	u8 u8aSendBuffer[4096];
 	char szErrbuf[PCAP_ERRBUF_SIZE];
-	int r;
+	int r, i;
 	pcap_t *ppcap = NULL;
 	char fBrokenSocket = 0;
 	char szHostname[PATH_MAX];
 	int pcnt = 0;
 	time_t start_time;
+	packet_buffer_t *packet_buffer_list;
+	size_t packet_header_length = 0;
 	int param_num_retr = 3;
 	int param_packet_length = 512;
 	int param_port = 0;
+	int param_retransmission_block_size = 1;
+
 
 	if (gethostname(szHostname, sizeof (szHostname) - 1)) {
 		perror("unable to get hostname");
@@ -112,7 +118,7 @@ main(int argc, char *argv[])
 			{ "help", no_argument, &flagHelp, 1 },
 			{ 0, 0, 0, 0 }
 		};
-		int c = getopt_long(argc, argv, "r:hf:p:",
+		int c = getopt_long(argc, argv, "r:hf:p:b:",
 			optiona, &nOptionIndex);
 
 		if (c == -1)
@@ -134,6 +140,10 @@ main(int argc, char *argv[])
 
 		case 'p': //port
 			param_port = atoi(optarg);
+			break;
+
+		case 'b': //retransmission block size
+			param_retransmission_block_size = atoi(optarg);
 			break;
 
 		default:
@@ -161,56 +171,62 @@ main(int argc, char *argv[])
 	pcap_setnonblock(ppcap, 1, szErrbuf);
 
 
-	memset(u8aSendBuffer, 0, sizeof (u8aSendBuffer));
-
+	//dirty hack: the last byte of the mac address is the port number. this makes it easy to filter out specific ports via wireshark
 	u8aIeeeHeader[SRC_MAC_LASTBYTE] = param_port;
 	u8aIeeeHeader[DST_MAC_LASTBYTE] = param_port;
 
- start_time = time(NULL);
- while (!fBrokenSocket) {
-		u8 * pu8 = u8aSendBuffer;
-		int rep;
 
-		u8 inp_data[2048];
-		ssize_t inl;
-
-
-		memcpy(u8aSendBuffer, u8aRadiotapHeader,
-			sizeof (u8aRadiotapHeader)
-		);
-		pu8 += sizeof (u8aRadiotapHeader);
-
-
-
+	packet_buffer_list = lib_alloc_packet_buffer_list(param_retransmission_block_size, MAX_PACKET_LENGTH);
+	//prepare the buffers with headers
+	for(i=0; i<param_retransmission_block_size; ++i) {
+		u8 *pu8 = packet_buffer_list[i].data;
+		memcpy(pu8, u8aRadiotapHeader, sizeof(u8aRadiotapHeader));
+		pu8 += sizeof(u8aRadiotapHeader);
 		memcpy(pu8, u8aIeeeHeader, sizeof (u8aIeeeHeader));
 		pu8 += sizeof (u8aIeeeHeader);
+				
+		//determine the length of the header
+		packet_header_length = pu8 - packet_buffer_list[i].data;
+	}
 
 
-		*(uint32_t*)pu8 = pcnt;
-		pu8 += 4;
+ start_time = time(NULL);
+ while (!fBrokenSocket) {
+		int ret;
 
-		inl = read(STDIN_FILENO, inp_data, param_packet_length);
-		if(inl < 0 || inl > sizeof(inp_data)){
-			perror("reading stdin");
-			return 1;
+		//wait until we captured a whole retransmission block
+		for(i=0; i<param_retransmission_block_size; ++i) {
+			ssize_t inl;
+			u8 *pu8 = packet_buffer_list[i].data + packet_header_length;
+			*(uint32_t*)pu8 = pcnt;
+			pu8 += 4;
+
+			inl = read(STDIN_FILENO, pu8, param_packet_length);
+			if(inl < 0){
+				perror("reading stdin");
+				return 1;
+			}
+
+			packet_buffer_list[i].len = packet_header_length + inl + 4;
+
+			pcnt++;
 		}
 
-		memcpy(pu8, inp_data, inl);
-		pu8 += inl;
-
-		for(rep=0; rep < param_num_retr; ++rep) {
-		r = pcap_inject(ppcap, u8aSendBuffer, pu8 - u8aSendBuffer);
-		if (r != (pu8-u8aSendBuffer)) {
-			printf("Trouble injecting packet");
-			return (1);
-		}
+		//send out the retransmission block several times
+		for(ret=0; ret < param_num_retr; ++ret) {
+			for(i=0; i< param_retransmission_block_size; ++i) {
+				r = pcap_inject(ppcap, packet_buffer_list[i].data, packet_buffer_list[i].len);
+				if (r != packet_buffer_list[i].len) {
+					printf("Trouble injecting packet");
+					return (1);
+				}
+			}
 		}
 
 		if(pcnt % 64 == 0) {
 			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt * param_num_retr / (time(NULL) - start_time));
 		}
 
-		pcnt++;
 	}
 
 
