@@ -170,6 +170,7 @@ main(int argc, char *argv[])
 		uint32_t seq_nr;
 		int block_num;
 		int packet_num;
+		int checksum_correct;
 		// receive
 
 		retval = pcap_next_ex(ppcap, &ppcapPacketHeader,
@@ -220,7 +221,6 @@ main(int argc, char *argv[])
 			case IEEE80211_RADIOTAP_FLAGS:
 				prd.m_nRadiotapFlags = *rti.this_arg;
 				break;
-
 			}
 		}
 		pu8Payload += u16HeaderLen + n80211HeaderLength;
@@ -228,20 +228,20 @@ main(int argc, char *argv[])
 		if (prd.m_nRadiotapFlags & IEEE80211_RADIOTAP_F_FCS)
 			bytes -= 4;
 
+
+		checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0; 
+
 		//first 4 bytes are the sequence number
 		seq_nr = *(uint32_t*)pu8Payload;
 		pu8Payload += 4;
 		bytes -= 4;
 
-//printf("got seqno %d\n", seq_nr);
+		block_num = seq_nr / param_retransmission_block_size;//if retr_block_size would be limited to powers of two, this could be replaced by a logical AND operation
 
-		block_num = seq_nr / param_retransmission_block_size;//if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
-
-//printf("got blocknono %d (last: %d)\n", block_num, last_block_num);
 
 		//if we received the start of a new block, we need to write out the old one
-		if(block_num != last_block_num && last_block_num >= 0) { //TODO: and FCS correct
-
+		if(block_num != last_block_num && last_block_num >= 0 && checksum_correct) { 
+			
 			//write out old block
 			for(i=0; i<param_retransmission_block_size; ++i) {
 				packet_buffer_t *p = packet_buffer_list + i;
@@ -264,14 +264,15 @@ main(int argc, char *argv[])
 				fprintf(stderr, "Lost %d blocks! Lossrate %f\t(%d / %d)\n", block_num - last_block_num - 1, 1.0 * num_lost/num_sent, num_lost, num_sent);
 			}
 		}
-				
-		last_block_num = block_num;
+	
+		//safety first: we only go to the next block if the FCS is correct
+		if(checksum_correct)
+			last_block_num = block_num;
 		
 		packet_num = seq_nr % param_retransmission_block_size; //if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
-//printf("got packetnum %d\n", packet_num);
 
-		//if the checksum is correct or it is still unitialized, then save the packet
-		if(/*TODO: FCS correct || */packet_buffer_list[packet_num].valid == 0) {
+		//if the checksum is correct than it is safe to overwrite a packet without checking the vadility. if however the checksum is wrong, we only write to unitialized packets. this avoids overwriting frames with correct checksum with corrupted ones
+		if(checksum_correct || packet_buffer_list[packet_num].valid == 0) {
 			memcpy(packet_buffer_list[packet_num].data, pu8Payload, bytes);
 			packet_buffer_list[packet_num].len = bytes;
 			packet_buffer_list[packet_num].valid = 1;
