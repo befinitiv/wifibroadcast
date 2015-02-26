@@ -48,17 +48,6 @@ static u8 u8aIeeeHeader[] = {
 	0x10, 0x86,
 };
 
-// this is where we store a summary of the
-// information from the radiotap header
-
-typedef struct  {
-	int m_nChannel;
-	int m_nChannelFlags;
-	int m_nRate;
-	int m_nAntenna;
-	int m_nRadiotapFlags;
-} __attribute__((packed)) PENUMBRA_RADIOTAP_DATA;
-
 
 
 int flagHelp = 0;
