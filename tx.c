@@ -21,6 +21,7 @@
 #include "wifibroadcast.h"
 
 #define MAX_PACKET_LENGTH 4192
+#define MAX_USER_PACKET_LENGTH 1470
 
 /* this is the template radiotap header we send packets out with */
 
@@ -61,8 +62,8 @@ usage(void)
 	    "(c)2015 befinitiv. Based on packetspammer by Andy Green.  Licensed under GPL2\n"
 	    "\n"
 	    "Usage: tx [options] <interface>\n\nOptions\n"
-	    "-r <count> Number of retransmissions (default 3)\n\n"
-	    "-f <bytes> Maximum number of bytes per frame (default 512)\n"
+	    "-r <count> Number of retransmissions (default 2)\n\n"
+	    "-f <bytes> Maximum number of bytes per frame (default %d. max %d)\n"
 			"-p <port> Port number 0-255 (default 0)\n"
 			"-b <blocksize> Number of packets in a retransmission block (default 1). Needs to match with rx.\n"
 	    "Example:\n"
@@ -70,7 +71,7 @@ usage(void)
 	    "  iwconfig mon0 mode monitor\n"
 	    "  ifconfig mon0 up\n"
 	    "  tx mon0        Reads data over stdion and sends it out over mon0\n"
-	    "\n");
+	    "\n", MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH);
 	exit(1);
 }
 
@@ -87,8 +88,8 @@ main(int argc, char *argv[])
 	time_t start_time;
 	packet_buffer_t *packet_buffer_list;
 	size_t packet_header_length = 0;
-	int param_num_retr = 3;
-	int param_packet_length = 512;
+	int param_num_retr = 2;
+	int param_packet_length = MAX_USER_PACKET_LENGTH;
 	int param_port = 0;
 	int param_retransmission_block_size = 1;
 
@@ -145,6 +146,11 @@ main(int argc, char *argv[])
 	if (optind >= argc)
 		usage();
 
+	
+	if(param_packet_length > MAX_USER_PACKET_LENGTH) {
+		printf("Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_packet_length);
+		return (1);
+	}
 
 		// open the interface in pcap
 
