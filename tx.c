@@ -212,7 +212,7 @@ main(int argc, char *argv[])
 			for(i=0; i< param_retransmission_block_size; ++i) {
 				r = pcap_inject(ppcap, packet_buffer_list[i].data, packet_buffer_list[i].len);
 				if (r != packet_buffer_list[i].len) {
-					printf("Trouble injecting packet");
+					pcap_perror(ppcap, "Trouble injecting packet");
 					return (1);
 				}
 
