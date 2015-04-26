@@ -184,7 +184,7 @@ int ieee80211_radiotap_iterator_next(
 			((rt_sizes[iterator->arg_index] >> 4) - 1);
 
 		if (pad)
-			iterator->arg_index +=
+			iterator->arg +=
 				(rt_sizes[iterator->arg_index] >> 4) - pad;
 
 		/*
