@@ -81,7 +81,7 @@ void open_and_configure_interface(const char *name, int port, monitor_interface_
 	}
 	
 
-	if(pcap_setnonblock(interface->ppcap, 1, szErrbuf) < 0) {
+	if(pcap_setnonblock(interface->ppcap, 0, szErrbuf) < 0) {
 		fprintf(stderr, "Error setting %s to nonblocking mode: %s\n", name, szErrbuf);
 	}
 
