@@ -44,7 +44,7 @@ usage(void)
 	printf(
 	    "(c)2015 befinitiv. Based on packetspammer by Andy Green.  Licensed under GPL2\n"
 	    "\n"
-	    "Usage: rx [options] <interface>\n\nOptions\n"
+	    "Usage: rx [options] <interfaces>\n\nOptions\n"
 			"-p <port> Port number 0-255 (default 0)\n"
 			"-b <blocksize> Number of packets in a retransmission block (default 1). Needs to match with tx.\n"
 	    "Example:\n"
@@ -239,6 +239,7 @@ main(int argc, char *argv[])
 		block_num = seq_nr / param_retransmission_block_size;//if retr_block_size would be limited to powers of two, this could be replaced by a logical AND operation
 
 
+		fprintf(stderr, "%x\t%x\n", block_num, seq_nr);
 		//if we received the start of a new block, we need to write out the old one
 		if(block_num != last_block_num && last_block_num >= 0 && checksum_correct) { 
 			
@@ -250,7 +251,7 @@ main(int argc, char *argv[])
 					write(STDOUT_FILENO, p->data, p->len);
 				}
 				else {
-					fprintf(stderr, "Lost a packet! Lossrate: %f\t(%d / %d)\n", 1.0 * num_lost/num_sent, num_lost, num_sent);
+					fprintf(stderr, "Lost a packet %x! Lossrate: %f\t(%d / %d)\n", i+(block_num-1)*param_retransmission_block_size, 1.0 * num_lost/num_sent, num_lost, num_sent);
 					num_lost++;
 				}
 
@@ -271,11 +272,12 @@ main(int argc, char *argv[])
 		
 		packet_num = seq_nr % param_retransmission_block_size; //if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
 
-		//if the checksum is correct than it is safe to overwrite a packet without checking the vadility. if however the checksum is wrong, we only write to unitialized packets. this avoids overwriting frames with correct checksum with corrupted ones
-		if(checksum_correct || packet_buffer_list[packet_num].valid == 0) {
+		//only overwrite packets where the checksum is not yet correct. otherwise the packets are already received correctly
+		if(packet_buffer_list[packet_num].crc_correct == 0) {
 			memcpy(packet_buffer_list[packet_num].data, pu8Payload, bytes);
 			packet_buffer_list[packet_num].len = bytes;
 			packet_buffer_list[packet_num].valid = 1;
+			packet_buffer_list[packet_num].crc_correct = checksum_correct;
 		}
 
 	}

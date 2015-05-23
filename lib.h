@@ -3,6 +3,7 @@
 
 typedef struct {
 	int valid;
+	int crc_correct;
 	size_t len; //this is the actual length of the packet stored in data
 	uint8_t *data;
 } packet_buffer_t;
