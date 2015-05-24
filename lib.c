@@ -11,6 +11,7 @@ void lib_init_packet_buffer(packet_buffer_t *p) {
 	assert(p != NULL);
 
 	p->valid = 0;
+	p->crc_correct = 0;
 	p->len = 0;
 	p->data = NULL;
 }
@@ -58,7 +59,6 @@ void lib_free_packet_buffer_list(packet_buffer_t *p, size_t num_packets) {
 
 	free(p);
 }
-
 
 
 
