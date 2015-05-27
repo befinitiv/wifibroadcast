@@ -221,7 +221,7 @@ void process_packet(monitor_interface_t *interface, packet_buffer_t *packet_buff
 					write(STDOUT_FILENO, p->data, p->len);
 				}
 				else {
-					fprintf(stderr, "Lost a packet %x! Lossrate: %f\t(%d / %d)\n", i+(block_num-1)*param_retransmission_block_size, 1.0 * num_lost/num_sent, num_lost, num_sent);
+					fprintf(stderr, "Lost a packet %x! Lossrate: %f\t(%d / %d)\n", i + last_block_num * param_retransmission_block_size, 1.0 * num_lost / num_sent, num_lost, num_sent);
 					num_lost++;
 				}
 
@@ -233,7 +233,7 @@ void process_packet(monitor_interface_t *interface, packet_buffer_t *packet_buff
 				int lost_blocks = block_num - last_block_num - 1;
 				num_lost += lost_blocks * param_retransmission_block_size;
 				num_sent += lost_blocks * param_retransmission_block_size;
-				fprintf(stderr, "Lost %d blocks! Lossrate %f\t(%d / %d)\n", block_num - last_block_num - 1, 1.0 * num_lost/num_sent, num_lost, num_sent);
+				fprintf(stderr, "Lost %d blocks! Lossrate %f\t(%d / %d)\n", lost_blocks, 1.0 * num_lost / num_sent, num_lost, num_sent);
 			}
 		}
 	
