@@ -232,7 +232,28 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 
 
 		//we have received a block number that exceeds the currently seen ones -> we need to make room for this new block
-		if(block_num > max_block_num && checksum_correct) {
+		//or we have received a block_num that is smaller than the current window of buffers -> this indicated that either the window is too small or that the transmitter has been restarted
+		int tx_restart = (block_num + param_retransmission_block_buffers <= max_block_num);
+		if((block_num > max_block_num || tx_restart) && checksum_correct) {
+			if(tx_restart) {
+				fprintf(stderr, "TX RESTART: Detected blk %x that lies outside of the current retr block buffer window (max_block_num = %x) (if there was no tx restart, increase window size via -d)\n", block_num, max_block_num);
+
+
+				//clear the old buffers TODO: move this into a function
+				for(i=0; i<param_retransmission_block_buffers; ++i) {
+					retransmission_block_buffer_t *rb = retransmission_block_buffer_list + i;
+					rb->block_num = -1;
+
+					int j;
+					for(j=0; j<param_retransmission_block_size; ++j) {
+						packet_buffer_t *p = rb->packet_buffer_list + j;
+						p->valid = 0;
+						p->crc_correct = 0;
+						p->len = 0;
+					}
+				}
+			}
+
 			//first, find the minimum block num in the buffers list. this will be the block that we replace
 			int min_block_num = INT_MAX;
 			int min_block_num_idx;
