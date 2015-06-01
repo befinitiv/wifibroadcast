@@ -233,7 +233,7 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 
 		//we have received a block number that exceeds the currently seen ones -> we need to make room for this new block
 		//or we have received a block_num that is smaller than the current window of buffers -> this indicated that either the window is too small or that the transmitter has been restarted
-		int tx_restart = (block_num + param_retransmission_block_buffers <= max_block_num);
+		int tx_restart = (block_num + param_retransmission_block_buffers < max_block_num);
 		if((block_num > max_block_num || tx_restart) && checksum_correct) {
 			if(tx_restart) {
 				fprintf(stderr, "TX RESTART: Detected blk %x that lies outside of the current retr block buffer window (max_block_num = %x) (if there was no tx restart, increase window size via -d)\n", block_num, max_block_num);
