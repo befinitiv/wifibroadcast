@@ -202,6 +202,11 @@ main(int argc, char *argv[])
 				return 1;
 			}
 
+			if(inl == 0) {
+				//EOF
+				return 0;
+			}
+
 			packet_buffer_list[i].len = packet_header_length + inl + 4;
 
 			pcnt++;
