@@ -66,6 +66,7 @@ usage(void)
 	    "-f <bytes> Maximum number of bytes per frame (default %d. max %d)\n"
 			"-p <port> Port number 0-255 (default 0)\n"
 			"-b <blocksize> Number of packets in a retransmission block (default 1). Needs to match with rx.\n"
+			"-m <bytes> Minimum number of bytes per frame (default: 0)\n"
 	    "Example:\n"
 	    "  echo -n mon0 > /sys/class/ieee80211/phy0/add_iface\n"
 	    "  iwconfig mon0 mode monitor\n"
@@ -89,9 +90,10 @@ main(int argc, char *argv[])
 	packet_buffer_t *packet_buffer_list;
 	size_t packet_header_length = 0;
 	int param_num_retr = 2;
-	int param_packet_length = MAX_USER_PACKET_LENGTH;
+	int param_max_packet_length = MAX_USER_PACKET_LENGTH;
 	int param_port = 0;
 	int param_retransmission_block_size = 1;
+	int param_min_packet_length = 0;
 
 
 	if (gethostname(szHostname, sizeof (szHostname) - 1)) {
@@ -108,7 +110,7 @@ main(int argc, char *argv[])
 			{ "help", no_argument, &flagHelp, 1 },
 			{ 0, 0, 0, 0 }
 		};
-		int c = getopt_long(argc, argv, "r:hf:p:b:",
+		int c = getopt_long(argc, argv, "r:hf:p:b:m:",
 			optiona, &nOptionIndex);
 
 		if (c == -1)
@@ -125,7 +127,7 @@ main(int argc, char *argv[])
 			break;
 
 		case 'f': // MTU
-			param_packet_length = atoi(optarg);
+			param_max_packet_length = atoi(optarg);
 			break;
 
 		case 'p': //port
@@ -134,6 +136,10 @@ main(int argc, char *argv[])
 
 		case 'b': //retransmission block size
 			param_retransmission_block_size = atoi(optarg);
+			break;
+
+		case 'm'://minimum packet length
+			param_min_packet_length = atoi(optarg);
 			break;
 
 		default:
@@ -147,8 +153,13 @@ main(int argc, char *argv[])
 		usage();
 
 	
-	if(param_packet_length > MAX_USER_PACKET_LENGTH) {
-		printf("Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_packet_length);
+	if(param_max_packet_length > MAX_USER_PACKET_LENGTH) {
+		printf("Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_max_packet_length);
+		return (1);
+	}
+
+	if(param_min_packet_length > param_max_packet_length) {
+		printf("Your minimum packet length is higher that your maximum packet length (%d > %d)\n", param_min_packet_length, param_max_packet_length);
 		return (1);
 	}
 
@@ -192,22 +203,32 @@ main(int argc, char *argv[])
 		//wait until we captured a whole retransmission block
 		for(i=0; i<param_retransmission_block_size; ++i) {
 			ssize_t inl;
+			int pkg_len = 0;
+
 			u8 *pu8 = packet_buffer_list[i].data + packet_header_length;
 			*(uint32_t*)pu8 = pcnt;
 			pu8 += 4;
 
-			inl = read(STDIN_FILENO, pu8, param_packet_length);
-			if(inl < 0 || inl > param_packet_length){
-				perror("reading stdin");
-				return 1;
-			}
 
-			if(inl == 0) {
-				//EOF
-				return 0;
-			}
+			//this loop runs until we have received the minimum packet length
+			do {	
+				inl = read(STDIN_FILENO, pu8 + pkg_len, param_max_packet_length-pkg_len);
+				if(inl < 0 || inl > param_max_packet_length-pkg_len){
+					perror("reading stdin");
+					return 1;
+				}
 
-			packet_buffer_list[i].len = packet_header_length + inl + 4;
+				if(inl == 0) {
+					//EOF
+					return 0;
+				}
+
+				pkg_len += inl;
+			} while(pkg_len < param_min_packet_length);
+
+
+
+			packet_buffer_list[i].len = packet_header_length + pkg_len + 4;
 
 			pcnt++;
 		}
