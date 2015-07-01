@@ -84,7 +84,6 @@ main(int argc, char *argv[])
 	int r, i;
 	pcap_t *ppcap = NULL;
 	char fBrokenSocket = 0;
-	char szHostname[PATH_MAX];
 	int pcnt = 0;
 	time_t start_time;
 	packet_buffer_t *packet_buffer_list;
@@ -94,12 +93,6 @@ main(int argc, char *argv[])
 	int param_port = 0;
 	int param_retransmission_block_size = 1;
 	int param_min_packet_length = 0;
-
-
-	if (gethostname(szHostname, sizeof (szHostname) - 1)) {
-		perror("unable to get hostname");
-	}
-	szHostname[sizeof (szHostname) - 1] = '\0';
 
 
 	printf("Raw data transmitter (c) 2015 befinitiv  GPL2\n");
