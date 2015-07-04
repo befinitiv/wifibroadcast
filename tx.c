@@ -15,6 +15,11 @@
  *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <time.h>
 
 #include "lib.h"
@@ -22,6 +27,9 @@
 
 #define MAX_PACKET_LENGTH 4192
 #define MAX_USER_PACKET_LENGTH 1470
+#define FIFO_NAME "fifo%d"
+#define MAX_FIFOS 8
+
 
 /* this is the template radiotap header we send packets out with */
 
@@ -67,12 +75,13 @@ usage(void)
 			"-p <port> Port number 0-255 (default 0)\n"
 			"-b <blocksize> Number of packets in a retransmission block (default 1). Needs to match with rx.\n"
 			"-m <bytes> Minimum number of bytes per frame (default: 0)\n"
+			"-s <stream> If <stream> is > 1 then the parameter changes \"tx\" input from stdin to named fifos. Each fifo transports a stream over a different port (starting at -p port and incrementing). Fifo names are \"%s\".\n"
 	    "Example:\n"
 	    "  echo -n mon0 > /sys/class/ieee80211/phy0/add_iface\n"
 	    "  iwconfig mon0 mode monitor\n"
 	    "  ifconfig mon0 up\n"
 	    "  tx mon0        Reads data over stdion and sends it out over mon0\n"
-	    "\n", MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH);
+	    "\n", MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH, FIFO_NAME);
 	exit(1);
 }
 
@@ -88,11 +97,19 @@ main(int argc, char *argv[])
 	time_t start_time;
 	packet_buffer_t *packet_buffer_list;
 	size_t packet_header_length = 0;
+
+	int fifo_fds[MAX_FIFOS];
+	int fifo_buffer_len[MAX_FIFOS];
+	uint8_t fifo_buffer[MAX_FIFOS][MAX_PACKET_LENGTH];
+
+
 	int param_num_retr = 2;
 	int param_max_packet_length = MAX_USER_PACKET_LENGTH;
 	int param_port = 0;
 	int param_retransmission_block_size = 1;
 	int param_min_packet_length = 0;
+	int param_fifo_count = 1;
+
 
 
 	printf("Raw data transmitter (c) 2015 befinitiv  GPL2\n");
@@ -103,7 +120,7 @@ main(int argc, char *argv[])
 			{ "help", no_argument, &flagHelp, 1 },
 			{ 0, 0, 0, 0 }
 		};
-		int c = getopt_long(argc, argv, "r:hf:p:b:m:",
+		int c = getopt_long(argc, argv, "r:hf:p:b:m:s:",
 			optiona, &nOptionIndex);
 
 		if (c == -1)
@@ -135,6 +152,10 @@ main(int argc, char *argv[])
 			param_min_packet_length = atoi(optarg);
 			break;
 
+		case 's': //how many streams (fifos) do we have in parallel
+			param_fifo_count = atoi(optarg);
+			break;
+
 		default:
 			printf("unknown switch %c\n", c);
 			usage();
@@ -155,6 +176,48 @@ main(int argc, char *argv[])
 		printf("Your minimum packet length is higher that your maximum packet length (%d > %d)\n", param_min_packet_length, param_max_packet_length);
 		return (1);
 	}
+
+	if(param_fifo_count > MAX_FIFOS) {
+		printf("The maximum number of streams (FIFOS) is %d (you requested %d)\n", MAX_FIFOS, param_fifo_count);
+		return (1);
+	}
+
+
+	//initialize
+	for(i=0; i<MAX_FIFOS; ++i) {
+		fifo_fds[i] = -1;
+		fifo_buffer_len[i] = 0;
+	}
+
+
+	if(param_fifo_count > 1) {
+		//new FIFO style
+		for(i=0; i<param_fifo_count; ++i) {
+			char fn[256];
+			sprintf(fn, FIFO_NAME, i);
+			
+
+			unlink(fn);
+			if(mkfifo(fn, 0666) != 0) {
+				printf("Error creating FIFO \"%s\"\n", fn);
+				return (1);
+			}
+			
+			printf("Waiting for \"%s\" being opened from the data source... \n", fn);			
+			if((fifo_fds[i] = open(fn, O_RDONLY)) < 0) {
+				printf("Error opening FIFO \"%s\"\n", fn);
+				return (1);
+			}
+			printf("OK\n");
+		}
+	}
+	else {
+		//old style STDIN input
+		fifo_fds[0] = STDIN_FILENO;
+	}
+
+
+
 
 		// open the interface in pcap
 
