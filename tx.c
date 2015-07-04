@@ -27,7 +27,7 @@
 
 #define MAX_PACKET_LENGTH 4192
 #define MAX_USER_PACKET_LENGTH 1470
-#define FIFO_NAME "fifo%d"
+#define FIFO_NAME "/tmp/fifo%d"
 #define MAX_FIFOS 8
 
 
@@ -85,23 +85,139 @@ usage(void)
 	exit(1);
 }
 
+void set_port_no(uint8_t *pu, uint8_t port) {
+	//dirty hack: the last byte of the mac address is the port number. this makes it easy to filter out specific ports via wireshark
+	pu[sizeof(u8aRadiotapHeader) + SRC_MAC_LASTBYTE] = port;
+	pu[sizeof(u8aRadiotapHeader) + DST_MAC_LASTBYTE] = port;
+}
+
+
+typedef struct {
+	int seq_nr;
+	int fd;
+	int curr_pb;
+	packet_buffer_t *pbl;
+} fifo_t;
+
+
+int fifo_init(fifo_t *fifo, int fifo_count, int retransmission_block_size) {
+	int packet_header_length;
+	int i;
+
+	for(i=0; i<fifo_count; ++i) {
+		int j;
+
+		fifo[i].seq_nr = 0;
+		fifo[i].fd = -1;
+		fifo[i].curr_pb = 0;
+		fifo[i].pbl = lib_alloc_packet_buffer_list(retransmission_block_size, MAX_PACKET_LENGTH);
+
+		//prepare the buffers with headers
+		for(j=0; j<retransmission_block_size; ++j) {
+			u8 *pu8 = fifo[i].pbl[j].data;
+			memcpy(pu8, u8aRadiotapHeader, sizeof(u8aRadiotapHeader));
+			pu8 += sizeof(u8aRadiotapHeader);
+			memcpy(pu8, u8aIeeeHeader, sizeof (u8aIeeeHeader));
+			pu8 += sizeof (u8aIeeeHeader);
+					
+			//determine the length of the header
+			packet_header_length = pu8 - fifo[i].pbl[j].data;
+			fifo[i].pbl[j].len = packet_header_length;
+		}
+	}
+
+	return packet_header_length;
+}
+
+void fifo_open(fifo_t *fifo, int fifo_count) {
+	int i;
+	if(fifo_count > 1) {
+		//new FIFO style
+		
+		//first, create all required fifos
+		for(i=0; i<fifo_count; ++i) {
+			char fn[256];
+			sprintf(fn, FIFO_NAME, i);
+			
+			unlink(fn);
+			if(mkfifo(fn, 0666) != 0) {
+				printf("Error creating FIFO \"%s\"\n", fn);
+				exit(1);
+			}
+		}
+		
+		//second: wait for the data sources to connect
+		for(i=0; i<fifo_count; ++i) {
+			char fn[256];
+			sprintf(fn, FIFO_NAME, i);
+			
+			printf("Waiting for \"%s\" being opened from the data source... \n", fn);			
+			if((fifo[i].fd = open(fn, O_RDONLY)) < 0) {
+				printf("Error opening FIFO \"%s\"\n", fn);
+				exit(1);
+			}
+			printf("OK\n");
+		}
+	}
+	else {
+		//old style STDIN input
+		fifo[0].fd = STDIN_FILENO;
+	}
+}
+
+
+void fifo_create_select_set(fifo_t *fifo, int fifo_count, fd_set *fifo_set, int *max_fifo_fd) {
+	int i;
+
+	FD_ZERO(fifo_set);
+	
+	for(i=0; i<fifo_count; ++i) {
+		FD_SET(fifo[i].fd, fifo_set);
+
+		if(fifo[i].fd > *max_fifo_fd) {
+			*max_fifo_fd = fifo[i].fd;
+		}
+	}
+}
+
+
+void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int port, int packet_header_len, int retransmission_block_size, int num_retr) {
+	int ret, i, r;
+	//send out the retransmission block several times
+	for(ret=0; ret < num_retr; ++ret) {
+		for(i=0; i< retransmission_block_size; ++i) {
+			
+			set_port_no(pbl[i].data, port);
+
+			r = pcap_inject(ppcap, pbl[i].data, pbl[i].len);
+			if (r != pbl[i].len) {
+				pcap_perror(ppcap, "Trouble injecting packet");
+				exit(1);
+			}
+		}
+	}
+
+	//reset the length back to the static headers
+	for(i=0; i< retransmission_block_size; ++i) {
+		pbl[i].len = packet_header_len;
+	}
+
+}
+
 
 int
 main(int argc, char *argv[])
 {
 	char szErrbuf[PCAP_ERRBUF_SIZE];
-	int r, i;
+	int i;
 	pcap_t *ppcap = NULL;
 	char fBrokenSocket = 0;
 	int pcnt = 0;
 	time_t start_time;
-	packet_buffer_t *packet_buffer_list;
 	size_t packet_header_length = 0;
-
-	int fifo_fds[MAX_FIFOS];
-	int fifo_buffer_len[MAX_FIFOS];
-	uint8_t fifo_buffer[MAX_FIFOS][MAX_PACKET_LENGTH];
-
+	fd_set fifo_set;
+	int max_fifo_fd = -1;
+	fifo_t fifo[MAX_FIFOS];
 
 	int param_num_retr = 2;
 	int param_max_packet_length = MAX_USER_PACKET_LENGTH;
@@ -183,44 +299,13 @@ main(int argc, char *argv[])
 	}
 
 
-	//initialize
-	for(i=0; i<MAX_FIFOS; ++i) {
-		fifo_fds[i] = -1;
-		fifo_buffer_len[i] = 0;
-	}
+	packet_header_length = fifo_init(fifo, param_fifo_count, param_retransmission_block_size);
+	fifo_open(fifo, param_fifo_count);
+	fifo_create_select_set(fifo, param_fifo_count, &fifo_set, &max_fifo_fd);
 
-
-	if(param_fifo_count > 1) {
-		//new FIFO style
-		for(i=0; i<param_fifo_count; ++i) {
-			char fn[256];
-			sprintf(fn, FIFO_NAME, i);
-			
-
-			unlink(fn);
-			if(mkfifo(fn, 0666) != 0) {
-				printf("Error creating FIFO \"%s\"\n", fn);
-				return (1);
-			}
-			
-			printf("Waiting for \"%s\" being opened from the data source... \n", fn);			
-			if((fifo_fds[i] = open(fn, O_RDONLY)) < 0) {
-				printf("Error opening FIFO \"%s\"\n", fn);
-				return (1);
-			}
-			printf("OK\n");
-		}
-	}
-	else {
-		//old style STDIN input
-		fifo_fds[0] = STDIN_FILENO;
-	}
-
-
-
-
-		// open the interface in pcap
-
+	
+	
+	// open the interface in pcap
 	szErrbuf[0] = '\0';
 	ppcap = pcap_open_live(argv[optind], 800, 1, 20, szErrbuf);
 	if (ppcap == NULL) {
@@ -233,73 +318,73 @@ main(int argc, char *argv[])
 	pcap_setnonblock(ppcap, 1, szErrbuf);
 
 
-	//dirty hack: the last byte of the mac address is the port number. this makes it easy to filter out specific ports via wireshark
-	u8aIeeeHeader[SRC_MAC_LASTBYTE] = param_port;
-	u8aIeeeHeader[DST_MAC_LASTBYTE] = param_port;
-
-
-	packet_buffer_list = lib_alloc_packet_buffer_list(param_retransmission_block_size, MAX_PACKET_LENGTH);
-	//prepare the buffers with headers
-	for(i=0; i<param_retransmission_block_size; ++i) {
-		u8 *pu8 = packet_buffer_list[i].data;
-		memcpy(pu8, u8aRadiotapHeader, sizeof(u8aRadiotapHeader));
-		pu8 += sizeof(u8aRadiotapHeader);
-		memcpy(pu8, u8aIeeeHeader, sizeof (u8aIeeeHeader));
-		pu8 += sizeof (u8aIeeeHeader);
-				
-		//determine the length of the header
-		packet_header_length = pu8 - packet_buffer_list[i].data;
-	}
 
 
  start_time = time(NULL);
  while (!fBrokenSocket) {
+ 		fd_set rdfs;
 		int ret;
 
-		//wait until we captured a whole retransmission block
-		for(i=0; i<param_retransmission_block_size; ++i) {
-			ssize_t inl;
-			int pkg_len = 0;
 
-			u8 *pu8 = packet_buffer_list[i].data + packet_header_length;
-			*(uint32_t*)pu8 = pcnt;
-			pu8 += 4;
+		rdfs = fifo_set;
 
+		//wait for new data on the fifos
+		ret = select(max_fifo_fd + 1, &rdfs, NULL, NULL, NULL);
 
-			//this loop runs until we have received the minimum packet length
-			do {	
-				inl = read(STDIN_FILENO, pu8 + pkg_len, param_max_packet_length-pkg_len);
-				if(inl < 0 || inl > param_max_packet_length-pkg_len){
-					perror("reading stdin");
-					return 1;
-				}
-
-				if(inl == 0) {
-					//EOF
-					return 0;
-				}
-
-				pkg_len += inl;
-			} while(pkg_len < param_min_packet_length);
-
-
-
-			packet_buffer_list[i].len = packet_header_length + pkg_len + 4;
-
-			pcnt++;
+		if(ret < 0) {
+			perror("select");
+			return (1);
 		}
 
-		//send out the retransmission block several times
-		for(ret=0; ret < param_num_retr; ++ret) {
-			for(i=0; i< param_retransmission_block_size; ++i) {
-				r = pcap_inject(ppcap, packet_buffer_list[i].data, packet_buffer_list[i].len);
-				if (r != packet_buffer_list[i].len) {
-					pcap_perror(ppcap, "Trouble injecting packet");
-					return (1);
+		//cycle through all fifos and look for new data
+		for(i=0; i<param_fifo_count && ret; ++i) {
+			if(!FD_ISSET(fifo[i].fd, &rdfs)) {
+				continue;
+			}
+
+			ret--;
+
+			packet_buffer_t *pb = fifo[i].pbl + fifo[i].curr_pb;
+			
+			//if the buffer is fresh we add the sequence-number
+			if(pb->len == packet_header_length) {
+				u8 *pu8 = pb->data + pb->len;
+				*(uint32_t*)pu8 = fifo[i].seq_nr++;
+				pb->len += 4;
+			}
+
+			//read the data
+			int inl = read(fifo[i].fd, pb->data + pb->len, param_max_packet_length - pb->len);
+			if(inl < 0 || inl > param_max_packet_length-pb->len){
+				perror("reading stdin");
+				return 1;
+			}
+
+			if(inl == 0) {
+				//EOF
+				printf("Warning: Lost connection to fifo %d. Please make sure that a data source is connected\n", i);
+				usleep(1e5);
+				continue;
+			}
+
+			pb->len += inl;
+			
+			//check if this packet is finished
+			if(pb->len >= param_min_packet_length) {
+				pcnt++;
+
+				//check if this block is finished
+				if(fifo[i].curr_pb == param_retransmission_block_size-1) {
+					pb_transmit_block(fifo[i].pbl, ppcap, i+param_port, packet_header_length, param_retransmission_block_size, param_num_retr);
+					fifo[i].curr_pb = 0;
+				}
+				else {
+					fifo[i].curr_pb++;
 				}
 
 			}
 		}
+
 
 		if(pcnt % 64 == 0) {
 			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt * param_num_retr / (time(NULL) - start_time));
