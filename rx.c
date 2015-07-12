@@ -192,19 +192,6 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
 
 
             block_buffer_list_reset(block_buffer_list, param_block_buffers, param_data_packets_per_block + param_fec_packets_per_block);
-     /*       //clear the old buffers TODO: move this into a function
-            for(i=0; i<param_block_buffers; ++i) {
-                block_buffer_t *rb = block_buffer_list + i;
-                rb->block_num = -1;
-
-                int j;
-                for(j=0; j<param_data_packets_per_block+param_fec_packets_per_block; ++j) {
-                    packet_buffer_t *p = rb->packet_buffer_list + j;
-                    p->valid = 0;
-                    p->crc_correct = 0;
-                    p->len = 0;
-                }
-            }*/
         }
 
         //first, find the minimum block num in the buffers list. this will be the block that we replace
@@ -227,6 +214,7 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
             packet_buffer_t *fec_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
             int di = 0, fi = 0;
 
+            //first, spit the received packets into DATA a FEC packets
             i = 0;
             while(di < param_data_packets_per_block || fi < param_fec_packets_per_block) {
                 if(di < param_data_packets_per_block) {
@@ -249,14 +237,13 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
             unsigned int nr_fec_blocks = 0;
             unsigned int reconstruction_failed = 0;
 
+            //go through each data packet and look if it needs some help
             for(i=0; i<param_data_packets_per_block; ++i) {
                 data_blocks[i] = data_pkgs[i]->data;
 
 
                 if(reconstruction_failed)
                     continue;
-
-
 
                 //TODO: Lost packages should have preference over CRC errors
 
@@ -272,6 +259,7 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
                     }
 
                     if(fi >= param_fec_packets_per_block) {
+                        //we did not have enough FEC packets to repair this block
                         fprintf(stderr, "----- Could not reconstruct block %d\n", last_block_num);
                         reconstruction_failed = 1;
                     }
@@ -289,20 +277,18 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
 
 
 
-            {//if(!reconstruction_failed) {
-                fec_decode((unsigned int) param_packet_length, data_blocks, param_data_packets_per_block, fec_blocks, fec_block_nos, erased_blocks, nr_fec_blocks);
-                for(i=0; i<param_data_packets_per_block; ++i) {
-                    payload_header_t *ph = (payload_header_t*)data_blocks[i];
 
-                    //if reconstruction did fail, the packet_len value is undefined. better limit it to some sensible value
-                    if(ph->data_length > param_packet_length)
-                        ph->data_length = param_packet_length;
+            //decode data and write it to STDOUT
+            fec_decode((unsigned int) param_packet_length, data_blocks, param_data_packets_per_block, fec_blocks, fec_block_nos, erased_blocks, nr_fec_blocks);
+            for(i=0; i<param_data_packets_per_block; ++i) {
+                payload_header_t *ph = (payload_header_t*)data_blocks[i];
 
-                    write(STDOUT_FILENO, data_blocks[i] + sizeof(payload_header_t), ph->data_length);
-                }
+                //if reconstruction did fail, the data_length value is undefined. better limit it to some sensible value
+                if(ph->data_length > param_packet_length)
+                    ph->data_length = param_packet_length;
+
+                write(STDOUT_FILENO, data_blocks[i] + sizeof(payload_header_t), ph->data_length);
             }
-
-
 
 
             //reset buffers
@@ -319,13 +305,13 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
     }
 
 
-//find the buffer into which we have to write this packet
-block_buffer_t *rbb = block_buffer_list;
-for(i=0; i<param_block_buffers; ++i) {
-    if(rbb->block_num == block_num) {
-        break;
+    //find the buffer into which we have to write this packet
+    block_buffer_t *rbb = block_buffer_list;
+    for(i=0; i<param_block_buffers; ++i) {
+        if(rbb->block_num == block_num) {
+            break;
         }
-    rbb++;
+        rbb++;
     }
 
     //check if we have actually found the corresponding block. this could not be the case due to a corrupt packet

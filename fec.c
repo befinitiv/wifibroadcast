@@ -959,9 +959,9 @@ void printDetail(void) {
 void fec_license(void)
 {
   fprintf(stderr,
-	  "   udpcast and its FEC code are free software\n"
+	  "   wifibroadcast and its FEC code are free software\n"
 	  "\n"
-          "   you can redistribute udpcast core functionality and/or\n"
+          "   you can redistribute wifibroadcast core functionality and/or\n"
 	  "   it them under the terms of the GNU General Public License as\n"
 	  "   published by the Free Software Foundation; either version 2 of\n"
 	  "   the License, or (at your option) any later version.\n"
@@ -975,10 +975,6 @@ void fec_license(void)
 	  "   along with this program; see the file COPYING.\n"
 	  "   If not, write to the Free Software Foundation, Inc.,\n"
 	  "   59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.\n"
-	  "\n"
-	  "   Alain Knaff\n"
-	  "   <alain@knaff.lu>\n"
-	  "   http://udpcast.linux.lu/\n"
 	  "\n"
 	  "the FEC code is covered by the following license:\n"
 	  "fec.c -- forward error correction based on Vandermonde matrices\n"
