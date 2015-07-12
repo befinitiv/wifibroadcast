@@ -54,7 +54,7 @@ int param_data_packets_per_block = 1;
 int param_block_buffers = 1;
 int param_fec_packets_per_block = 0;
 int param_packet_length = MAX_USER_PACKET_LENGTH;
-int num_sent = 0, num_lost = 0;
+int blocks_received = 0, blocks_damaged = 0;
 int max_block_num = -1;
 
 void
@@ -210,6 +210,8 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
         int last_block_num = block_buffer_list[min_block_num_idx].block_num;
 
         if(last_block_num != -1) {
+            blocks_received++;
+
             packet_buffer_t *data_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
             packet_buffer_t *fec_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
             int di = 0, fi = 0;
@@ -260,7 +262,8 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
 
                     if(fi >= param_fec_packets_per_block) {
                         //we did not have enough FEC packets to repair this block
-                        fprintf(stderr, "----- Could not reconstruct block %d\n", last_block_num);
+                        blocks_damaged++;
+                        fprintf(stderr, "Could not fully reconstruct block %x! Damage rate: %f (%d / %d blocks)\n", last_block_num, 1.0 * blocks_damaged / blocks_received, blocks_damaged, blocks_received);
                         reconstruction_failed = 1;
                     }
                     else
