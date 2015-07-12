@@ -147,6 +147,26 @@ void open_and_configure_interface(const char *name, int port, monitor_interface_
 }
 
 
+void block_buffer_list_reset(block_buffer_t *block_buffer_list, size_t block_buffer_list_len, int block_buffer_len) {
+    int i;
+    block_buffer_t *rb = block_buffer_list;
+
+    for(i=0; i<block_buffer_list_len; ++i) {
+        rb->block_num = -1;
+
+        int j;
+        packet_buffer_t *p = rb->packet_buffer_list;
+        for(j=0; j<param_data_packets_per_block+param_fec_packets_per_block; ++j) {
+            p->valid = 0;
+            p->crc_correct = 0;
+            p->len = 0;
+            p++;
+        }
+
+        rb++;
+    }
+}
+
 void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buffer_t *block_buffer_list, int adapter_no)
 {
     wifi_packet_header_t *wph;
@@ -158,7 +178,7 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
     data += sizeof(wifi_packet_header_t);
     data_len -= sizeof(wifi_packet_header_t);
 
-    block_num = wph->sequence_number / (param_data_packets_per_block+param_fec_packets_per_block);//if block_size would be limited to powers of two, this could be replaced by a logical AND operation
+    block_num = wph->sequence_number / (param_data_packets_per_block+param_fec_packets_per_block);//if aram_data_packets_per_block+param_fec_packets_per_block would be limited to powers of two, this could be replaced by a logical AND operation
 
     //debug_print("adap %d rec %x blk %x crc %d\n", adapter_no, wph->sequence_number, block_num, crc_correct);
 
@@ -171,7 +191,8 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
             fprintf(stderr, "TX RESTART: Detected blk %x that lies outside of the current retr block buffer window (max_block_num = %x) (if there was no tx restart, increase window size via -d)\n", block_num, max_block_num);
 
 
-            //clear the old buffers TODO: move this into a function
+            block_buffer_list_reset(block_buffer_list, param_block_buffers, param_data_packets_per_block + param_fec_packets_per_block);
+     /*       //clear the old buffers TODO: move this into a function
             for(i=0; i<param_block_buffers; ++i) {
                 block_buffer_t *rb = block_buffer_list + i;
                 rb->block_num = -1;
@@ -183,7 +204,7 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
                     p->crc_correct = 0;
                     p->len = 0;
                 }
-            }
+            }*/
         }
 
         //first, find the minimum block num in the buffers list. this will be the block that we replace
