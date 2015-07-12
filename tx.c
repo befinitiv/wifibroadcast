@@ -448,7 +448,7 @@ main(int argc, char *argv[])
 
 
 		if(pcnt % 64 == 0) {
-			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt * param_fec_packets_per_block / (time(NULL) - start_time));
+			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt / param_data_packets_per_block * (param_data_packets_per_block + param_fec_packets_per_block) / (time(NULL) - start_time));
 		}
 
 	}
