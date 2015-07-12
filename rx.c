@@ -16,14 +16,18 @@
  */
 
 
+#include "fec.h"
+
 
 #include "lib.h"
 #include "wifibroadcast.h"
 #include "radiotap.h"
 
 #define MAX_PACKET_LENGTH 4192
+#define MAX_USER_PACKET_LENGTH 1450
+#define MAX_DATA_OR_FEC_PACKETS_PER_BLOCK 32
 
-#define DEBUG 0
+#define DEBUG 1
 #define debug_print(fmt, ...) \
             do { if (DEBUG) fprintf(stderr, fmt, __VA_ARGS__); } while (0)
 
@@ -46,8 +50,10 @@ typedef struct  {
 
 int flagHelp = 0;
 int param_port = 0;
-int param_retransmission_block_size = 1;
+int param_data_packets_per_block = 1;
 int param_retransmission_block_buffers = 1;
+int param_fec_packets_per_block = 0;
+int param_packet_length = MAX_USER_PACKET_LENGTH;
 int num_sent = 0, num_lost = 0;
 int max_block_num = -1;
 
@@ -59,14 +65,16 @@ usage(void)
 	    "\n"
 	    "Usage: rx [options] <interfaces>\n\nOptions\n"
 			"-p <port> Port number 0-255 (default 0)\n"
-			"-b <blocksize> Number of packets in a retransmission block (default 1). Needs to match with tx.\n"
-			"-d <blocks> Number of retransmissions blocks that are buffered (default 1). This is needed in case of diversity if one adapter delivers data faster than the other. Note that this increases latency\n"
+			"-b <count> Number of data packets in a block (default 1). Needs to match with tx.\n"
+	    "-r <count> Number of FEC packets per block (default 0). Needs to match with tx.\n\n"
+	    "-f <bytes> Number of bytes per packet (default %d. max %d). This is also the FEC block size. Needs to match with tx\n"
+			"-d <blocks> Number of transmissions blocks that are buffered (default 1). This is needed in case of diversity if one adapter delivers data faster than the other. Note that this increases latency\n"
 	    "Example:\n"
 	    "  echo -n mon0 > /sys/class/ieee80211/phy0/add_iface\n"
 	    "  iwconfig mon0 mode monitor\n"
 	    "  ifconfig mon0 up\n"
 	    "  rx mon0        Receive raw packets on mon0 and output the payload to stdout\n"
-	    "\n");
+	    "\n", MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH);
 	exit(1);
 }
 
@@ -226,9 +234,9 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 		pu8Payload += 4;
 		bytes -= 4;
 
-		block_num = seq_nr / param_retransmission_block_size;//if retr_block_size would be limited to powers of two, this could be replaced by a logical AND operation
+		block_num = seq_nr / (param_data_packets_per_block+param_fec_packets_per_block);//if retr_block_size would be limited to powers of two, this could be replaced by a logical AND operation
 
-		debug_print("adap %d rec %x blk %x crc %d\n", adapter_no, seq_nr, block_num, checksum_correct);
+		//debug_print("adap %d rec %x blk %x crc %d\n", adapter_no, seq_nr, block_num, checksum_correct);
 
 
 		//we have received a block number that exceeds the currently seen ones -> we need to make room for this new block
@@ -245,7 +253,7 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 					rb->block_num = -1;
 
 					int j;
-					for(j=0; j<param_retransmission_block_size; ++j) {
+					for(j=0; j<param_data_packets_per_block+param_fec_packets_per_block; ++j) {
 						packet_buffer_t *p = rb->packet_buffer_list + j;
 						p->valid = 0;
 						p->crc_correct = 0;
@@ -264,23 +272,114 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 				}
 			}
 
-			debug_print("removing block %x at index %i for block %x\n", min_block_num, min_block_num_idx, block_num);
+			//debug_print("removing block %x at index %i for block %x\n", min_block_num, min_block_num_idx, block_num);
 		
 			packet_buffer_t *packet_buffer_list = retransmission_block_buffer_list[min_block_num_idx].packet_buffer_list;
 			int last_block_num = retransmission_block_buffer_list[min_block_num_idx].block_num;
 
 			if(last_block_num != -1) {
-				//write out old block
-				for(i=0; i<param_retransmission_block_size; ++i) {
+				packet_buffer_t *data_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+				packet_buffer_t *fec_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+				int di = 0, fi = 0;
+
+				i = 0;
+				while(di < param_data_packets_per_block || fi < param_fec_packets_per_block) {
+					if(di < param_data_packets_per_block) {
+						data_pkgs[di] = packet_buffer_list + i++;
+						di++;
+					}
+
+					if(fi < param_fec_packets_per_block) {
+						fec_pkgs[fi] = packet_buffer_list + i++;
+						fi++;
+					}
+				}
+
+
+				fi = 0;
+				uint8_t *data_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+				uint8_t *fec_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+				unsigned int fec_block_nos[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+				unsigned int erased_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+				unsigned int nr_fec_blocks = 0;
+				unsigned int reconstruction_failed = 0;
+
+				for(i=0; i<param_data_packets_per_block; ++i) {
+					data_blocks[i] = data_pkgs[i]->data;
+
+
+					if(reconstruction_failed)
+						continue;
+
+
+
+					//TODO: Lost packages should have preference over CRC errors
+
+					//is this packet damaged?
+					if(!data_pkgs[i]->valid || !data_pkgs[i]->crc_correct) {
+						
+						//first, find a working FEC packet
+						while(fi < param_fec_packets_per_block) {
+							if(fec_pkgs[fi]->valid && fec_pkgs[fi]->crc_correct) {
+								break;
+							}
+							fi++;
+						}
+
+						if(fi >= param_fec_packets_per_block) {
+							fprintf(stderr, "----- Could not reconstruct block %d\n", last_block_num);
+							reconstruction_failed = 1;
+						}
+						else
+						{
+							erased_blocks[nr_fec_blocks] = i;
+							fec_block_nos[nr_fec_blocks] = fi;
+							fec_blocks[nr_fec_blocks] = fec_pkgs[fi]->data;
+							nr_fec_blocks++;
+							fi++;
+							debug_print("adap %d blk %x Replaced data %d with FEC %d\n", adapter_no, block_num, i, fi);
+						}
+					}
+				}
+
+
+
+				{//if(!reconstruction_failed) {
+					fec_decode((unsigned int) param_packet_length, data_blocks, param_data_packets_per_block, fec_blocks, fec_block_nos, erased_blocks, nr_fec_blocks);
+					for(i=0; i<param_data_packets_per_block; ++i) {
+						uint32_t packet_len = *(uint32_t*)(data_blocks[i]);
+
+						//if reconstruction did fail, the packet_len value is undefined. better limit it to some sensible value
+						if(packet_len > param_packet_length)
+							packet_len = param_packet_length;
+						
+						write(STDOUT_FILENO, data_blocks[i] + 4, packet_len);
+					}
+				}
+
+
+
+
+				//reset buffers
+				for(i=0; i<param_data_packets_per_block + param_fec_packets_per_block; ++i) {
+					packet_buffer_t *p = packet_buffer_list + i;
+					p->valid = 0;
+					p->crc_correct = 0;
+					p->len = 0;
+				}
+			}
+
+/*				//write out old block
+				for(i=0; i<param_data_packets_per_block; ++i) {
 					packet_buffer_t *p = packet_buffer_list + i;
 					num_sent++;
 					if(p->valid) {
 						write(STDOUT_FILENO, p->data, p->len);
 						if(p->crc_correct == 0)
-							fprintf(stderr, "wrong crc on pkg %x in block %x\n", last_block_num * param_retransmission_block_size + i, last_block_num);
+							fprintf(stderr, "wrong crc on pkg %x in block %x\n", last_block_num * param_data_packets_per_block + i, last_block_num);
 					}
 					else {
-						fprintf(stderr, "Lost a packet %x! Lossrate: %f\t(%d / %d)\n", i + last_block_num * param_retransmission_block_size, 1.0 * num_lost / num_sent, num_lost, num_sent);
+						fprintf(stderr, "Lost a packet %x! Lossrate: %f\t(%d / %d)\n", i + last_block_num * param_data_packets_per_block, 1.0 * num_lost / num_sent, num_lost, num_sent);
 						num_lost++;
 					}
 
@@ -289,7 +388,7 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 					p->len = 0;
 				}
 			}
-
+*/
 		retransmission_block_buffer_list[min_block_num_idx].block_num = block_num;
 		max_block_num = block_num;
 		}
@@ -307,7 +406,7 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 		//check if we have actually found the corresponding block. this could not be the case due to a corrupt packet
 		if(i != param_retransmission_block_buffers) {
 			packet_buffer_t *packet_buffer_list = rbb->packet_buffer_list;
-			packet_num = seq_nr % param_retransmission_block_size; //if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
+			packet_num = seq_nr % (param_data_packets_per_block+param_fec_packets_per_block); //if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
 
 			//only overwrite packets where the checksum is not yet correct. otherwise the packets are already received correctly
 			if(packet_buffer_list[packet_num].crc_correct == 0) {
@@ -335,7 +434,7 @@ main(int argc, char *argv[])
 			{ "help", no_argument, &flagHelp, 1 },
 			{ 0, 0, 0, 0 }
 		};
-		int c = getopt_long(argc, argv, "hp:b:d:",
+		int c = getopt_long(argc, argv, "hp:b:d:r:f:",
 			optiona, &nOptionIndex);
 
 		if (c == -1)
@@ -351,12 +450,20 @@ main(int argc, char *argv[])
 			param_port = atoi(optarg);
 			break;
 		
-		case 'b': //retransmission block size
-			param_retransmission_block_size = atoi(optarg);
+		case 'b': 
+			param_data_packets_per_block = atoi(optarg);
 			break;
 
+		case 'r': 
+			param_fec_packets_per_block = atoi(optarg);
+			break;
+		
 		case 'd':
 			param_retransmission_block_buffers = atoi(optarg);
+			break;
+		
+		case 'f': // MTU
+			param_packet_length = atoi(optarg);
 			break;
 
 		default:
@@ -368,6 +475,15 @@ main(int argc, char *argv[])
 
 	if (optind >= argc)
 		usage();
+	
+	
+	if(param_packet_length > MAX_USER_PACKET_LENGTH) {
+		printf("Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_packet_length);
+		return (1);
+	}
+
+
+	fec_init();
 
 	int x = optind;
 	while(x < argc && num_interfaces < MAX_PENUMBRA_INTERFACES) {
@@ -382,7 +498,7 @@ main(int argc, char *argv[])
 	for(i=0; i<param_retransmission_block_buffers; ++i)
 	{
 		retransmission_block_buffer_list[i].block_num = -1;
-		retransmission_block_buffer_list[i].packet_buffer_list = lib_alloc_packet_buffer_list(param_retransmission_block_size, MAX_PACKET_LENGTH);
+		retransmission_block_buffer_list[i].packet_buffer_list = lib_alloc_packet_buffer_list(param_data_packets_per_block+param_fec_packets_per_block, MAX_PACKET_LENGTH);
 	}
 
 

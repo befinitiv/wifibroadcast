@@ -22,11 +22,17 @@
 
 #include <time.h>
 
+#include "fec.h"
+
 #include "lib.h"
 #include "wifibroadcast.h"
 
+
+
 #define MAX_PACKET_LENGTH 4192
-#define MAX_USER_PACKET_LENGTH 1470
+#define MAX_USER_PACKET_LENGTH 1450
+#define MAX_DATA_OR_FEC_PACKETS_PER_BLOCK 32
+
 #define FIFO_NAME "/tmp/fifo%d"
 #define MAX_FIFOS 8
 
@@ -70,10 +76,10 @@ usage(void)
 	    "(c)2015 befinitiv. Based on packetspammer by Andy Green.  Licensed under GPL2\n"
 	    "\n"
 	    "Usage: tx [options] <interface>\n\nOptions\n"
-	    "-r <count> Number of retransmissions (default 2)\n\n"
-	    "-f <bytes> Maximum number of bytes per frame (default %d. max %d)\n"
+	    "-r <count> Number of FEC packets per block (default 0). Needs to match with rx.\n\n"
+	    "-f <bytes> Number of bytes per packet (default %d. max %d). This is also the FEC block size. Needs to match with rx\n"
 			"-p <port> Port number 0-255 (default 0)\n"
-			"-b <blocksize> Number of packets in a retransmission block (default 1). Needs to match with rx.\n"
+			"-b <count> Number of data packets in a block (default 1). Needs to match with rx.\n"
 			"-m <bytes> Minimum number of bytes per frame (default: 0)\n"
 			"-s <stream> If <stream> is > 1 then the parameter changes \"tx\" input from stdin to named fifos. Each fifo transports a stream over a different port (starting at -p port and incrementing). Fifo names are \"%s\".\n"
 	    "Example:\n"
@@ -99,9 +105,20 @@ typedef struct {
 	packet_buffer_t *pbl;
 } fifo_t;
 
+	
 
-int fifo_init(fifo_t *fifo, int fifo_count, int retransmission_block_size) {
-	int packet_header_length;
+int packet_header_init(uint8_t *packet_header) {
+			u8 *pu8 = packet_header;
+			memcpy(packet_header, u8aRadiotapHeader, sizeof(u8aRadiotapHeader));
+			pu8 += sizeof(u8aRadiotapHeader);
+			memcpy(pu8, u8aIeeeHeader, sizeof (u8aIeeeHeader));
+			pu8 += sizeof (u8aIeeeHeader);
+					
+			//determine the length of the header
+			return pu8 - packet_header;
+}
+
+void fifo_init(fifo_t *fifo, int fifo_count, int block_size) {
 	int i;
 
 	for(i=0; i<fifo_count; ++i) {
@@ -110,23 +127,14 @@ int fifo_init(fifo_t *fifo, int fifo_count, int retransmission_block_size) {
 		fifo[i].seq_nr = 0;
 		fifo[i].fd = -1;
 		fifo[i].curr_pb = 0;
-		fifo[i].pbl = lib_alloc_packet_buffer_list(retransmission_block_size, MAX_PACKET_LENGTH);
+		fifo[i].pbl = lib_alloc_packet_buffer_list(block_size, MAX_PACKET_LENGTH);
 
 		//prepare the buffers with headers
-		for(j=0; j<retransmission_block_size; ++j) {
-			u8 *pu8 = fifo[i].pbl[j].data;
-			memcpy(pu8, u8aRadiotapHeader, sizeof(u8aRadiotapHeader));
-			pu8 += sizeof(u8aRadiotapHeader);
-			memcpy(pu8, u8aIeeeHeader, sizeof (u8aIeeeHeader));
-			pu8 += sizeof (u8aIeeeHeader);
-					
-			//determine the length of the header
-			packet_header_length = pu8 - fifo[i].pbl[j].data;
-			fifo[i].pbl[j].len = packet_header_length;
+		for(j=0; j<block_size; ++j) {
+			fifo[i].pbl[j].len = 0;
 		}
 	}
 
-	return packet_header_length;
 }
 
 void fifo_open(fifo_t *fifo, int fifo_count) {
@@ -181,25 +189,68 @@ void fifo_create_select_set(fifo_t *fifo, int fifo_count, fd_set *fifo_set, int 
 }
 
 
-void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int port, int packet_header_len, int retransmission_block_size, int num_retr) {
-	int ret, i, r;
-	//send out the retransmission block several times
-	for(ret=0; ret < num_retr; ++ret) {
-		for(i=0; i< retransmission_block_size; ++i) {
-			
-			set_port_no(pbl[i].data, port);
+void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int port, int packet_length, uint8_t *packet_header, int packet_header_len, int data_packets_per_block, int fec_packets_per_block) {
+	int i;
+	uint8_t packet_buffer[MAX_PACKET_LENGTH];
+	uint8_t *data_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+	uint8_t fec_pool[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK][MAX_USER_PACKET_LENGTH];
+	uint8_t *fec_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
 
-			r = pcap_inject(ppcap, pbl[i].data, pbl[i].len);
-			if (r != pbl[i].len) {
+
+	for(i=0; i<data_packets_per_block; ++i) {
+		data_blocks[i] = pbl[i].data;
+	}
+
+	for(i=0; i<fec_packets_per_block; ++i) {
+		fec_blocks[i] = fec_pool[i];
+	}
+
+	fec_encode(packet_length, data_blocks, data_packets_per_block, (unsigned char **)fec_blocks, fec_packets_per_block);
+
+	//prepare the header (it stays constant)
+	memcpy(packet_buffer, packet_header, packet_header_len);
+	set_port_no(packet_buffer, port);
+
+	//send data and FEC packets interleaved
+	int di = 0; 
+	int fi = 0;
+	int r;
+	while(di < data_packets_per_block || fi < fec_packets_per_block) {
+		if(di < data_packets_per_block) {
+			//add sequence number
+			*(uint32_t*)(packet_buffer+packet_header_len) = *seq_nr;
+			(*seq_nr)++;
+			memcpy(packet_buffer+packet_header_len + 4, data_blocks[di], packet_length);
+			di++;
+		
+			int plen = packet_length + packet_header_len + 4;
+			r = pcap_inject(ppcap, packet_buffer, plen);
+			if (r != plen) {
 				pcap_perror(ppcap, "Trouble injecting packet");
 				exit(1);
 			}
 		}
-	}
 
-	//reset the length back to the static headers
-	for(i=0; i< retransmission_block_size; ++i) {
-		pbl[i].len = packet_header_len;
+		if(fi < fec_packets_per_block) {
+			//add sequence number
+			*(uint32_t*)(packet_buffer+packet_header_len) = *seq_nr;
+			(*seq_nr)++;
+			memcpy(packet_buffer+packet_header_len + 4, fec_blocks[fi], packet_length);
+			fi++;
+			
+			int plen = packet_length + packet_header_len + 4;
+			r = pcap_inject(ppcap, packet_buffer, plen);
+			if (r != plen) {
+				pcap_perror(ppcap, "Trouble injecting packet");
+				exit(1);
+			}
+		}
+
+		//reset the length back
+		for(i=0; i< data_packets_per_block; ++i) {
+			pbl[i].len = 0;
+		}
+			
 	}
 
 }
@@ -214,15 +265,16 @@ main(int argc, char *argv[])
 	char fBrokenSocket = 0;
 	int pcnt = 0;
 	time_t start_time;
+	uint8_t packet_header[1024];
 	size_t packet_header_length = 0;
 	fd_set fifo_set;
 	int max_fifo_fd = -1;
 	fifo_t fifo[MAX_FIFOS];
 
-	int param_num_retr = 2;
-	int param_max_packet_length = MAX_USER_PACKET_LENGTH;
+	int param_fec_packets_per_block = 0;
+	int param_packet_length = MAX_USER_PACKET_LENGTH;
 	int param_port = 0;
-	int param_retransmission_block_size = 1;
+	int param_data_packets_per_block = 1;
 	int param_min_packet_length = 0;
 	int param_fifo_count = 1;
 
@@ -249,11 +301,11 @@ main(int argc, char *argv[])
 			usage();
 
 		case 'r': // retransmissions
-			param_num_retr = atoi(optarg);
+			param_fec_packets_per_block = atoi(optarg);
 			break;
 
 		case 'f': // MTU
-			param_max_packet_length = atoi(optarg);
+			param_packet_length = atoi(optarg);
 			break;
 
 		case 'p': //port
@@ -261,7 +313,7 @@ main(int argc, char *argv[])
 			break;
 
 		case 'b': //retransmission block size
-			param_retransmission_block_size = atoi(optarg);
+			param_data_packets_per_block = atoi(optarg);
 			break;
 
 		case 'm'://minimum packet length
@@ -283,13 +335,13 @@ main(int argc, char *argv[])
 		usage();
 
 	
-	if(param_max_packet_length > MAX_USER_PACKET_LENGTH) {
-		printf("Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_max_packet_length);
+	if(param_packet_length > MAX_USER_PACKET_LENGTH) {
+		printf("Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_packet_length);
 		return (1);
 	}
 
-	if(param_min_packet_length > param_max_packet_length) {
-		printf("Your minimum packet length is higher that your maximum packet length (%d > %d)\n", param_min_packet_length, param_max_packet_length);
+	if(param_min_packet_length > param_packet_length) {
+		printf("Your minimum packet length is higher that your maximum packet length (%d > %d)\n", param_min_packet_length, param_packet_length);
 		return (1);
 	}
 
@@ -298,13 +350,22 @@ main(int argc, char *argv[])
 		return (1);
 	}
 
+	if(param_data_packets_per_block > MAX_DATA_OR_FEC_PACKETS_PER_BLOCK || param_fec_packets_per_block > MAX_DATA_OR_FEC_PACKETS_PER_BLOCK) {
+		printf("Data and FEC packets per block are limited to %d (you requested %d data, %d FEC)\n", MAX_DATA_OR_FEC_PACKETS_PER_BLOCK, param_data_packets_per_block, param_fec_packets_per_block);
+		return (1);
+	}
 
-	packet_header_length = fifo_init(fifo, param_fifo_count, param_retransmission_block_size);
+
+	packet_header_length = packet_header_init(packet_header);
+	fifo_init(fifo, param_fifo_count, param_data_packets_per_block);
 	fifo_open(fifo, param_fifo_count);
 	fifo_create_select_set(fifo, param_fifo_count, &fifo_set, &max_fifo_fd);
 
-	
-	
+
+	//initialize forward error correction
+	fec_init();
+
+
 	// open the interface in pcap
 	szErrbuf[0] = '\0';
 	ppcap = pcap_open_live(argv[optind], 800, 1, 20, szErrbuf);
@@ -346,16 +407,14 @@ main(int argc, char *argv[])
 
 			packet_buffer_t *pb = fifo[i].pbl + fifo[i].curr_pb;
 			
-			//if the buffer is fresh we add the sequence-number
-			if(pb->len == packet_header_length) {
-				u8 *pu8 = pb->data + pb->len;
-				*(uint32_t*)pu8 = fifo[i].seq_nr++;
-				pb->len += 4;
+			//if the buffer is fresh we add a length field
+			if(pb->len == 0) {
+				pb->len += 4; //make space for a length field (will be filled later)
 			}
 
 			//read the data
-			int inl = read(fifo[i].fd, pb->data + pb->len, param_max_packet_length - pb->len);
-			if(inl < 0 || inl > param_max_packet_length-pb->len){
+			int inl = read(fifo[i].fd, pb->data + pb->len, param_packet_length - pb->len);
+			if(inl < 0 || inl > param_packet_length-pb->len){
 				perror("reading stdin");
 				return 1;
 			}
@@ -372,10 +431,12 @@ main(int argc, char *argv[])
 			//check if this packet is finished
 			if(pb->len >= param_min_packet_length) {
 				pcnt++;
+				*(uint32_t*)(pb->data) = pb->len - 4; //write the length into the packet. this is needed since with fec we cannot use the wifi packet lentgh anymore. We could also set the user payload to a fixed size but this would introduce additional latency since tx would need to wait until that amount of data has been received
+
 
 				//check if this block is finished
-				if(fifo[i].curr_pb == param_retransmission_block_size-1) {
-					pb_transmit_block(fifo[i].pbl, ppcap, i+param_port, packet_header_length, param_retransmission_block_size, param_num_retr);
+				if(fifo[i].curr_pb == param_data_packets_per_block-1) {
+					pb_transmit_block(fifo[i].pbl, ppcap, &(fifo[i].seq_nr), i+param_port, param_packet_length, packet_header, packet_header_length, param_data_packets_per_block, param_fec_packets_per_block);
 					fifo[i].curr_pb = 0;
 				}
 				else {
@@ -387,7 +448,7 @@ main(int argc, char *argv[])
 
 
 		if(pcnt % 64 == 0) {
-			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt * param_num_retr / (time(NULL) - start_time));
+			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt * param_fec_packets_per_block / (time(NULL) - start_time));
 		}
 
 	}
