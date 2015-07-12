@@ -189,9 +189,8 @@ void fifo_create_select_set(fifo_t *fifo, int fifo_count, fd_set *fifo_set, int 
 }
 
 
-void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int port, int packet_length, uint8_t *packet_header, int packet_header_len, int data_packets_per_block, int fec_packets_per_block) {
+void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int port, int packet_length, uint8_t *packet_transmit_buffer, int packet_header_len, int data_packets_per_block, int fec_packets_per_block) {
 	int i;
-	uint8_t packet_buffer[MAX_PACKET_LENGTH];
 	uint8_t *data_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
 	uint8_t fec_pool[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK][MAX_USER_PACKET_LENGTH];
 	uint8_t *fec_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
@@ -207,9 +206,7 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
 
 	fec_encode(packet_length, data_blocks, data_packets_per_block, (unsigned char **)fec_blocks, fec_packets_per_block);
 
-    uint8_t *pb = packet_buffer;
-	//prepare the header (it stays constant)
-    memcpy(pb, packet_header, packet_header_len);
+    uint8_t *pb = packet_transmit_buffer;
     set_port_no(pb, port);
     pb += packet_header_len;
 
@@ -222,15 +219,14 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
             //add header outside of FEC
             wifi_packet_header_t *wph = (wifi_packet_header_t*)pb;
             wph->sequence_number = *seq_nr;
-            pb += sizeof(wifi_packet_header_t);
             (*seq_nr)++;
 
             //copy data
-            memcpy(pb, data_blocks[di], packet_length);
+            memcpy(pb + sizeof(wifi_packet_header_t), data_blocks[di], packet_length);
 			di++;
 		
 			int plen = packet_length + packet_header_len + 4;
-			r = pcap_inject(ppcap, packet_buffer, plen);
+            r = pcap_inject(ppcap, packet_transmit_buffer, plen);
 			if (r != plen) {
 				pcap_perror(ppcap, "Trouble injecting packet");
 				exit(1);
@@ -241,14 +237,13 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
             //add header outside of FEC
             wifi_packet_header_t *wph = (wifi_packet_header_t*)pb;
             wph->sequence_number = *seq_nr;
-            pb += sizeof(wifi_packet_header_t);
             (*seq_nr)++;
 
-            memcpy(pb, fec_blocks[fi], packet_length);
+            memcpy(pb + sizeof(wifi_packet_header_t), fec_blocks[fi], packet_length);
 			fi++;
 			
 			int plen = packet_length + packet_header_len + 4;
-			r = pcap_inject(ppcap, packet_buffer, plen);
+            r = pcap_inject(ppcap, packet_transmit_buffer, plen);
 			if (r != plen) {
 				pcap_perror(ppcap, "Trouble injecting packet");
 				exit(1);
@@ -274,7 +269,7 @@ main(int argc, char *argv[])
 	char fBrokenSocket = 0;
 	int pcnt = 0;
 	time_t start_time;
-	uint8_t packet_header[1024];
+    uint8_t packet_transmit_buffer[MAX_PACKET_LENGTH];
 	size_t packet_header_length = 0;
 	fd_set fifo_set;
 	int max_fifo_fd = -1;
@@ -365,7 +360,7 @@ main(int argc, char *argv[])
 	}
 
 
-	packet_header_length = packet_header_init(packet_header);
+    packet_header_length = packet_header_init(packet_transmit_buffer);
 	fifo_init(fifo, param_fifo_count, param_data_packets_per_block);
 	fifo_open(fifo, param_fifo_count);
 	fifo_create_select_set(fifo, param_fifo_count, &fifo_set, &max_fifo_fd);
@@ -445,7 +440,7 @@ main(int argc, char *argv[])
 
 				//check if this block is finished
 				if(fifo[i].curr_pb == param_data_packets_per_block-1) {
-					pb_transmit_block(fifo[i].pbl, ppcap, &(fifo[i].seq_nr), i+param_port, param_packet_length, packet_header, packet_header_length, param_data_packets_per_block, param_fec_packets_per_block);
+                    pb_transmit_block(fifo[i].pbl, ppcap, &(fifo[i].seq_nr), i+param_port, param_packet_length, packet_transmit_buffer, packet_header_length, param_data_packets_per_block, param_fec_packets_per_block);
 					fifo[i].curr_pb = 0;
 				}
 				else {

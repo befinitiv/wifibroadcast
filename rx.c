@@ -271,7 +271,7 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 				}
 			}
 
-			//debug_print("removing block %x at index %i for block %x\n", min_block_num, min_block_num_idx, block_num);
+            //debug_print("removing block %x at index %i for block %x\n", min_block_num, min_block_num_idx, block_num);
 		
 			packet_buffer_t *packet_buffer_list = retransmission_block_buffer_list[min_block_num_idx].packet_buffer_list;
 			int last_block_num = retransmission_block_buffer_list[min_block_num_idx].block_num;
