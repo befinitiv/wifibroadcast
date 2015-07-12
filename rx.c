@@ -155,7 +155,7 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 		u8 *pu8Payload = payloadBuffer;
 		int bytes;
 		int n;
-		uint32_t seq_nr;
+        wifi_packet_header_t *wph;
 		int block_num;
 		int packet_num;
 		int checksum_correct;
@@ -229,14 +229,13 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 
 		checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0; 
 
-		//first 4 bytes are the sequence number
-		seq_nr = *(uint32_t*)pu8Payload;
-		pu8Payload += 4;
-		bytes -= 4;
+        wph = (wifi_packet_header_t*)pu8Payload;
+        pu8Payload += sizeof(wifi_packet_header_t);
+        bytes -= sizeof(wifi_packet_header_t);
 
-		block_num = seq_nr / (param_data_packets_per_block+param_fec_packets_per_block);//if retr_block_size would be limited to powers of two, this could be replaced by a logical AND operation
+        block_num = wph->sequence_number / (param_data_packets_per_block+param_fec_packets_per_block);//if retr_block_size would be limited to powers of two, this could be replaced by a logical AND operation
 
-		//debug_print("adap %d rec %x blk %x crc %d\n", adapter_no, seq_nr, block_num, checksum_correct);
+        //debug_print("adap %d rec %x blk %x crc %d\n", adapter_no, wph->sequence_number, block_num, checksum_correct);
 
 
 		//we have received a block number that exceeds the currently seen ones -> we need to make room for this new block
@@ -337,7 +336,7 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 							fec_blocks[nr_fec_blocks] = fec_pkgs[fi]->data;
 							nr_fec_blocks++;
 							fi++;
-							debug_print("adap %d blk %x Replaced data %d with FEC %d\n", adapter_no, block_num, i, fi);
+							//debug_print("adap %d blk %x Replaced data %d with FEC %d\n", adapter_no, block_num, i, fi);
 						}
 					}
 				}
@@ -347,13 +346,13 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 				{//if(!reconstruction_failed) {
 					fec_decode((unsigned int) param_packet_length, data_blocks, param_data_packets_per_block, fec_blocks, fec_block_nos, erased_blocks, nr_fec_blocks);
 					for(i=0; i<param_data_packets_per_block; ++i) {
-						uint32_t packet_len = *(uint32_t*)(data_blocks[i]);
+                        payload_header_t *ph = (payload_header_t*)data_blocks[i];
 
 						//if reconstruction did fail, the packet_len value is undefined. better limit it to some sensible value
-						if(packet_len > param_packet_length)
-							packet_len = param_packet_length;
+                        if(ph->data_length > param_packet_length)
+                            ph->data_length = param_packet_length;
 						
-						write(STDOUT_FILENO, data_blocks[i] + 4, packet_len);
+                        write(STDOUT_FILENO, data_blocks[i] + sizeof(payload_header_t), ph->data_length);
 					}
 				}
 
@@ -406,7 +405,7 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 		//check if we have actually found the corresponding block. this could not be the case due to a corrupt packet
 		if(i != param_retransmission_block_buffers) {
 			packet_buffer_t *packet_buffer_list = rbb->packet_buffer_list;
-			packet_num = seq_nr % (param_data_packets_per_block+param_fec_packets_per_block); //if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
+            packet_num = wph->sequence_number % (param_data_packets_per_block+param_fec_packets_per_block); //if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
 
 			//only overwrite packets where the checksum is not yet correct. otherwise the packets are already received correctly
 			if(packet_buffer_list[packet_num].crc_correct == 0) {

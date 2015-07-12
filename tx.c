@@ -207,9 +207,11 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
 
 	fec_encode(packet_length, data_blocks, data_packets_per_block, (unsigned char **)fec_blocks, fec_packets_per_block);
 
+    uint8_t *pb = packet_buffer;
 	//prepare the header (it stays constant)
-	memcpy(packet_buffer, packet_header, packet_header_len);
-	set_port_no(packet_buffer, port);
+    memcpy(pb, packet_header, packet_header_len);
+    set_port_no(pb, port);
+    pb += packet_header_len;
 
 	//send data and FEC packets interleaved
 	int di = 0; 
@@ -217,10 +219,14 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
 	int r;
 	while(di < data_packets_per_block || fi < fec_packets_per_block) {
 		if(di < data_packets_per_block) {
-			//add sequence number
-			*(uint32_t*)(packet_buffer+packet_header_len) = *seq_nr;
-			(*seq_nr)++;
-			memcpy(packet_buffer+packet_header_len + 4, data_blocks[di], packet_length);
+            //add header outside of FEC
+            wifi_packet_header_t *wph = (wifi_packet_header_t*)pb;
+            wph->sequence_number = *seq_nr;
+            pb += sizeof(wifi_packet_header_t);
+            (*seq_nr)++;
+
+            //copy data
+            memcpy(pb, data_blocks[di], packet_length);
 			di++;
 		
 			int plen = packet_length + packet_header_len + 4;
@@ -232,10 +238,13 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
 		}
 
 		if(fi < fec_packets_per_block) {
-			//add sequence number
-			*(uint32_t*)(packet_buffer+packet_header_len) = *seq_nr;
-			(*seq_nr)++;
-			memcpy(packet_buffer+packet_header_len + 4, fec_blocks[fi], packet_length);
+            //add header outside of FEC
+            wifi_packet_header_t *wph = (wifi_packet_header_t*)pb;
+            wph->sequence_number = *seq_nr;
+            pb += sizeof(wifi_packet_header_t);
+            (*seq_nr)++;
+
+            memcpy(pb, fec_blocks[fi], packet_length);
 			fi++;
 			
 			int plen = packet_length + packet_header_len + 4;
@@ -407,9 +416,9 @@ main(int argc, char *argv[])
 
 			packet_buffer_t *pb = fifo[i].pbl + fifo[i].curr_pb;
 			
-			//if the buffer is fresh we add a length field
+            //if the buffer is fresh we add a payload header
 			if(pb->len == 0) {
-				pb->len += 4; //make space for a length field (will be filled later)
+                pb->len += sizeof(payload_header_t); //make space for a length field (will be filled later)
 			}
 
 			//read the data
@@ -430,9 +439,9 @@ main(int argc, char *argv[])
 			
 			//check if this packet is finished
 			if(pb->len >= param_min_packet_length) {
-				pcnt++;
-				*(uint32_t*)(pb->data) = pb->len - 4; //write the length into the packet. this is needed since with fec we cannot use the wifi packet lentgh anymore. We could also set the user payload to a fixed size but this would introduce additional latency since tx would need to wait until that amount of data has been received
-
+                payload_header_t *ph = (payload_header_t*)pb->data;
+                ph->data_length = pb->len - sizeof(payload_header_t); //write the length into the packet. this is needed since with fec we cannot use the wifi packet lentgh anymore. We could also set the user payload to a fixed size but this would introduce additional latency since tx would need to wait until that amount of data has been received
+                pcnt++;
 
 				//check if this block is finished
 				if(fifo[i].curr_pb == param_data_packets_per_block-1) {
