@@ -189,6 +189,25 @@ void fifo_create_select_set(fifo_t *fifo, int fifo_count, fd_set *fifo_set, int 
 }
 
 
+void pb_transmit_packet(pcap_t *ppcap, int seq_nr, uint8_t *packet_transmit_buffer, int packet_header_len, const uint8_t *packet_data, int packet_length) {
+    //add header outside of FEC
+    wifi_packet_header_t *wph = (wifi_packet_header_t*)(packet_transmit_buffer + packet_header_len);
+    wph->sequence_number = seq_nr;
+
+    //copy data
+    memcpy(packet_transmit_buffer + packet_header_len + sizeof(wifi_packet_header_t), packet_data, packet_length);
+
+    int plen = packet_length + packet_header_len + sizeof(wifi_packet_header_t);
+    int r = pcap_inject(ppcap, packet_transmit_buffer, plen);
+    if (r != plen) {
+        pcap_perror(ppcap, "Trouble injecting packet");
+        exit(1);
+    }
+}
+
+
+
+
 void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int port, int packet_length, uint8_t *packet_transmit_buffer, int packet_header_len, int data_packets_per_block, int fec_packets_per_block) {
 	int i;
 	uint8_t *data_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
@@ -213,49 +232,25 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
 	//send data and FEC packets interleaved
 	int di = 0; 
 	int fi = 0;
-	int r;
 	while(di < data_packets_per_block || fi < fec_packets_per_block) {
 		if(di < data_packets_per_block) {
-            //add header outside of FEC
-            wifi_packet_header_t *wph = (wifi_packet_header_t*)pb;
-            wph->sequence_number = *seq_nr;
-            (*seq_nr)++;
-
-            //copy data
-            memcpy(pb + sizeof(wifi_packet_header_t), data_blocks[di], packet_length);
-			di++;
-		
-			int plen = packet_length + packet_header_len + 4;
-            r = pcap_inject(ppcap, packet_transmit_buffer, plen);
-			if (r != plen) {
-				pcap_perror(ppcap, "Trouble injecting packet");
-				exit(1);
-			}
+            pb_transmit_packet(ppcap, *seq_nr, packet_transmit_buffer, packet_header_len, data_blocks[di], packet_length);
+            *seq_nr = *seq_nr + 1;
+            di++;
 		}
 
-		if(fi < fec_packets_per_block) {
-            //add header outside of FEC
-            wifi_packet_header_t *wph = (wifi_packet_header_t*)pb;
-            wph->sequence_number = *seq_nr;
-            (*seq_nr)++;
-
-            memcpy(pb + sizeof(wifi_packet_header_t), fec_blocks[fi], packet_length);
-			fi++;
-			
-			int plen = packet_length + packet_header_len + 4;
-            r = pcap_inject(ppcap, packet_transmit_buffer, plen);
-			if (r != plen) {
-				pcap_perror(ppcap, "Trouble injecting packet");
-				exit(1);
-			}
-		}
-
-		//reset the length back
-		for(i=0; i< data_packets_per_block; ++i) {
-			pbl[i].len = 0;
+        if(fi < fec_packets_per_block) {
+            pb_transmit_packet(ppcap, *seq_nr, packet_transmit_buffer, packet_header_len, fec_blocks[fi], packet_length);
+            *seq_nr = *seq_nr + 1;
+            fi++;
 		}
 			
 	}
+
+    //reset the length back
+    for(i=0; i< data_packets_per_block; ++i) {
+        pbl[i].len = 0;
+    }
 
 }
 
