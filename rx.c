@@ -212,73 +212,140 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
         if(last_block_num != -1) {
             blocks_received++;
 
+            //we have both pointers to the packet buffers (to get information about crc and vadility) and raw data pointers for fec_decode
             packet_buffer_t *data_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
             packet_buffer_t *fec_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            uint8_t *data_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            uint8_t *fec_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            int datas_missing = 0, datas_corrupt = 0, fecs_missing = 0, fecs_corrupt = 0;
             int di = 0, fi = 0;
 
-            //first, spit the received packets into DATA a FEC packets
+
+            //first, split the received packets into DATA a FEC packets and count the damaged packets
             i = 0;
             while(di < param_data_packets_per_block || fi < param_fec_packets_per_block) {
                 if(di < param_data_packets_per_block) {
                     data_pkgs[di] = packet_buffer_list + i++;
+                    data_blocks[di] = data_pkgs[di]->data;
+                    if(!data_pkgs[di]->valid)
+                        datas_missing++;
+                    if(data_pkgs[di]->valid && !data_pkgs[di]->crc_correct)
+                        datas_corrupt++;
                     di++;
                 }
 
                 if(fi < param_fec_packets_per_block) {
                     fec_pkgs[fi] = packet_buffer_list + i++;
+                    if(!fec_pkgs[fi]->valid)
+                        fecs_missing++;
+
+                    if(fec_pkgs[fi]->valid && !fec_pkgs[fi]->crc_correct)
+                        fecs_corrupt++;
+
                     fi++;
                 }
             }
 
+            const int good_fecs_c = param_fec_packets_per_block - fecs_missing - fecs_corrupt;
+            const int datas_missing_c = datas_missing;
+            const int datas_corrupt_c = datas_corrupt;
+            const int fecs_missing_c = fecs_missing;
+            const int fecs_corrupt_c = fecs_corrupt;
 
-            fi = 0;
-            uint8_t *data_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
-            uint8_t *fec_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            int good_fecs = good_fecs_c;
+            //the following three fields are infos for fec_decode
             unsigned int fec_block_nos[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
             unsigned int erased_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
             unsigned int nr_fec_blocks = 0;
-            unsigned int reconstruction_failed = 0;
-
-            //go through each data packet and look if it needs some help
-            for(i=0; i<param_data_packets_per_block; ++i) {
-                data_blocks[i] = data_pkgs[i]->data;
 
 
-                if(reconstruction_failed)
+            //we try to archive the best possible results with the data we have. Therefore, we execute the FEC repair in the following order:
+            // 1. Replace lost data packets. In case of video these ones would have the biggest impact on video quality.
+            // 2. Replace corrupted data packets. If we still have enough good FEC packets left then we might be able to fully reconstruct the data...
+            // 3. Fill in lost data packets with corrupted FEC packets. This is the desperate approach to make things 'a little' better. The idea is that a corrupted FEC packet should have a lower impact than a data packet that is completely missing
+
+
+            fi = 0;
+            di = 0;
+
+            //look for missing DATA and replace them with good FECs
+            while(datas_missing && good_fecs && di < param_data_packets_per_block && fi < param_fec_packets_per_block) {
+                if(data_pkgs[di]->valid) {
+                    di++;
                     continue;
-
-                //TODO: Lost packages should have preference over CRC errors
-
-                //is this packet damaged?
-                if(!data_pkgs[i]->valid || !data_pkgs[i]->crc_correct) {
-
-                    //first, find a working FEC packet
-                    while(fi < param_fec_packets_per_block) {
-                        if(fec_pkgs[fi]->valid && fec_pkgs[fi]->crc_correct) {
-                            break;
-                        }
-                        fi++;
-                    }
-
-                    if(fi >= param_fec_packets_per_block) {
-                        //we did not have enough FEC packets to repair this block
-                        blocks_damaged++;
-                        fprintf(stderr, "Could not fully reconstruct block %x! Damage rate: %f (%d / %d blocks)\n", last_block_num, 1.0 * blocks_damaged / blocks_received, blocks_damaged, blocks_received);
-                        reconstruction_failed = 1;
-                    }
-                    else
-                    {
-                        erased_blocks[nr_fec_blocks] = i;
-                        fec_block_nos[nr_fec_blocks] = fi;
-                        fec_blocks[nr_fec_blocks] = fec_pkgs[fi]->data;
-                        nr_fec_blocks++;
-                        fi++;
-                        //debug_print("adap %d blk %x Replaced data %d with FEC %d\n", adapter_no, block_num, i, fi);
-                    }
                 }
+
+                if(!fec_pkgs[fi]->valid || !fec_pkgs[fi]->crc_correct) {
+                    fi++;
+                    continue;
+                }
+
+                //at this point, data is invalid and fec is good -> replace data with fec
+                erased_blocks[nr_fec_blocks] = di;
+                fec_block_nos[nr_fec_blocks] = fi;
+                fec_blocks[nr_fec_blocks] = fec_pkgs[fi]->data;
+                fec_pkgs[fi]->valid = 0; //invalidate the FEC since this has been used and shall not be used again
+                data_pkgs[di]->valid = 1; //mark the data packet as good so that we do not replace it a second time
+                data_pkgs[di]->crc_correct = 1;
+                nr_fec_blocks++;
+                datas_missing--;
+                good_fecs--;
             }
 
+            di = 0;
+            fi = 0;
+            //now look for corrupted DATA to replace them with good fecs
+            while(datas_corrupt && good_fecs && di < param_data_packets_per_block && fi < param_fec_packets_per_block) {
+                if(!data_pkgs[di]->valid || data_pkgs[di]->crc_correct) {
+                    di++;
+                    continue;
+                }
 
+                if(!fec_pkgs[fi]->valid || !fec_pkgs[fi]->crc_correct) {
+                    fi++;
+                    continue;
+                }
+
+                //at this point, data is valid but corrupted and fec is good -> replace data with fec
+                erased_blocks[nr_fec_blocks] = di;
+                fec_block_nos[nr_fec_blocks] = fi;
+                fec_blocks[nr_fec_blocks] = fec_pkgs[fi]->data;
+                fec_pkgs[fi]->valid = 0; //invalidate the FEC since this has been used and shall not be used again
+                data_pkgs[di]->crc_correct = 1; //mark the data packet as good so that we do not replace it a second time
+                nr_fec_blocks++;
+                datas_corrupt--;
+                good_fecs--;
+            }
+
+            di = 0;
+            fi = 0;
+            //now we are desperate. if we have used all good FECS and if there are still lost data packages, we will at least replace them with a corrupted FEC packet
+            while(datas_missing && fecs_corrupt && di < param_data_packets_per_block && fi < param_fec_packets_per_block) {
+                if(data_pkgs[di]->valid) {
+                    di++;
+                    continue;
+                }
+
+                if(!fec_pkgs[fi]->valid) {
+                    fi++;
+                    continue;
+                }
+
+                //at this point we have a lost DATA and a corrupt FEC
+                erased_blocks[nr_fec_blocks] = di;
+                fec_block_nos[nr_fec_blocks] = fi;
+                fec_blocks[nr_fec_blocks] = fec_pkgs[fi]->data;
+                nr_fec_blocks++;
+                datas_missing--;
+                fecs_corrupt--;
+            }
+
+            if(datas_missing || datas_corrupt || (datas_missing+datas_corrupt) > good_fecs_c) {
+                //we did not have enough FEC packets to repair this block
+                blocks_damaged++;
+                fprintf(stderr, "Could not fully reconstruct block %x! Damage rate: %f (%d / %d blocks)\n", last_block_num, 1.0 * blocks_damaged / blocks_received, blocks_damaged, blocks_received);
+                debug_print("Data mis: %d\tData corr: %d\tFEC mis: %d\tFEC corr: %d\n", datas_missing_c, datas_corrupt_c, fecs_missing_c, fecs_corrupt_c);
+            }
 
 
             //decode data and write it to STDOUT
