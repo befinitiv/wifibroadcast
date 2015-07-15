@@ -180,7 +180,7 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
 
     block_num = wph->sequence_number / (param_data_packets_per_block+param_fec_packets_per_block);//if aram_data_packets_per_block+param_fec_packets_per_block would be limited to powers of two, this could be replaced by a logical AND operation
 
-    //debug_print("adap %d rec %x blk %x crc %d\n", adapter_no, wph->sequence_number, block_num, crc_correct);
+    //debug_print("adap %d rec %x blk %x crc %d len %d\n", adapter_no, wph->sequence_number, block_num, crc_correct, data_len);
 
 
     //we have received a block number that exceeds the currently seen ones -> we need to make room for this new block
@@ -257,6 +257,9 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
             unsigned int fec_block_nos[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
             unsigned int erased_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
             unsigned int nr_fec_blocks = 0;
+
+
+						//debug_print("Data missing: %d\tData corrupt: %d\tFEC missing: %d\tFEC corrupt: %d\n", datas_missing_c, datas_corrupt_c, fecs_missing_c, fecs_corrupt_c);
 
 
             //we try to archive the best possible results with the data we have. Therefore, we execute the FEC repair in the following order:
