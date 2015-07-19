@@ -27,7 +27,7 @@
 #define MAX_USER_PACKET_LENGTH 1450
 #define MAX_DATA_OR_FEC_PACKETS_PER_BLOCK 32
 
-#define DEBUG 1
+#define DEBUG 0
 #define debug_print(fmt, ...) \
             do { if (DEBUG) fprintf(stderr, fmt, __VA_ARGS__); } while (0)
 
@@ -259,7 +259,7 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
             unsigned int nr_fec_blocks = 0;
 
 
-#if 0
+#if DEBUG
             if(datas_missing_c + datas_corrupt_c > good_fecs_c) {
                 int x;
 
