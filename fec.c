@@ -964,7 +964,7 @@ void fec_license(void)
           "   you can redistribute wifibroadcast core functionality and/or\n"
 	  "   it them under the terms of the GNU General Public License as\n"
 	  "   published by the Free Software Foundation; either version 2 of\n"
-	  "   the License, or (at your option) any later version.\n"
+	  "   the License.\n"
 	  "\n"
 	  "   This program is distributed in the hope that it will be useful,\n"
 	  "   but WITHOUT ANY WARRANTY; without even the implied warranty of\n"
