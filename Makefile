@@ -1,15 +1,23 @@
+
+LDFLAGS=-lpcap
+CPPFLAGS=-Wall
+
 all: rx tx
 
 
 
-rx: rx.c lib.c
-	gcc  -Wall radiotap.c rx.c lib.c -o rx -lpcap
+%.o: %.c
+	gcc -c -o $@ $< $(CPPFLAGS)
 
 
-tx: tx.c lib.c
-	gcc -Wall tx.c lib.c -o tx -lpcap
+rx: rx.o lib.o radiotap.o fec.o
+	gcc -o $@ $^ $(LDFLAGS)
+
+
+tx: tx.o lib.o fec.o
+	gcc -o $@ $^ $(LDFLAGS)
 
 
 clean:
-	rm -f rx tx *~
+	rm -f rx tx *~ *.o
 

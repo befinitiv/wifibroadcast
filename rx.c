@@ -16,14 +16,18 @@
  */
 
 
+#include "fec.h"
+
 
 #include "lib.h"
 #include "wifibroadcast.h"
 #include "radiotap.h"
 
 #define MAX_PACKET_LENGTH 4192
+#define MAX_USER_PACKET_LENGTH 1450
+#define MAX_DATA_OR_FEC_PACKETS_PER_BLOCK 32
 
-#define DEBUG 0
+#define DEBUG 1
 #define debug_print(fmt, ...) \
             do { if (DEBUG) fprintf(stderr, fmt, __VA_ARGS__); } while (0)
 
@@ -46,9 +50,11 @@ typedef struct  {
 
 int flagHelp = 0;
 int param_port = 0;
-int param_retransmission_block_size = 1;
-int param_retransmission_block_buffers = 1;
-int num_sent = 0, num_lost = 0;
+int param_data_packets_per_block = 8;
+int param_fec_packets_per_block = 4;
+int param_block_buffers = 1;
+int param_packet_length = MAX_USER_PACKET_LENGTH;
+int blocks_received = 0, blocks_damaged = 0;
 int max_block_num = -1;
 
 void
@@ -59,14 +65,16 @@ usage(void)
 	    "\n"
 	    "Usage: rx [options] <interfaces>\n\nOptions\n"
 			"-p <port> Port number 0-255 (default 0)\n"
-			"-b <blocksize> Number of packets in a retransmission block (default 1). Needs to match with tx.\n"
-			"-d <blocks> Number of retransmissions blocks that are buffered (default 1). This is needed in case of diversity if one adapter delivers data faster than the other. Note that this increases latency\n"
+			"-b <count> Number of data packets in a block (default 1). Needs to match with tx.\n"
+	    "-r <count> Number of FEC packets per block (default 0). Needs to match with tx.\n\n"
+	    "-f <bytes> Number of bytes per packet (default %d. max %d). This is also the FEC block size. Needs to match with tx\n"
+			"-d <blocks> Number of transmissions blocks that are buffered (default 1). This is needed in case of diversity if one adapter delivers data faster than the other. Note that this increases latency\n"
 	    "Example:\n"
 	    "  echo -n mon0 > /sys/class/ieee80211/phy0/add_iface\n"
 	    "  iwconfig mon0 mode monitor\n"
 	    "  ifconfig mon0 up\n"
 	    "  rx mon0        Receive raw packets on mon0 and output the payload to stdout\n"
-	    "\n");
+	    "\n", MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH);
 	exit(1);
 }
 
@@ -79,7 +87,7 @@ typedef struct {
 typedef struct {
 	int block_num;
 	packet_buffer_t *packet_buffer_list;
-} retransmission_block_buffer_t;
+} block_buffer_t;
 
 void open_and_configure_interface(const char *name, int port, monitor_interface_t *interface) {
 	struct bpf_program bpfprogram;
@@ -139,7 +147,264 @@ void open_and_configure_interface(const char *name, int port, monitor_interface_
 }
 
 
-void process_packet(monitor_interface_t *interface, retransmission_block_buffer_t *retransmission_block_buffer_list, int adapter_no) {
+void block_buffer_list_reset(block_buffer_t *block_buffer_list, size_t block_buffer_list_len, int block_buffer_len) {
+    int i;
+    block_buffer_t *rb = block_buffer_list;
+
+    for(i=0; i<block_buffer_list_len; ++i) {
+        rb->block_num = -1;
+
+        int j;
+        packet_buffer_t *p = rb->packet_buffer_list;
+        for(j=0; j<param_data_packets_per_block+param_fec_packets_per_block; ++j) {
+            p->valid = 0;
+            p->crc_correct = 0;
+            p->len = 0;
+            p++;
+        }
+
+        rb++;
+    }
+}
+
+void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buffer_t *block_buffer_list, int adapter_no)
+{
+    wifi_packet_header_t *wph;
+    int block_num;
+    int packet_num;
+    int i;
+
+    wph = (wifi_packet_header_t*)data;
+    data += sizeof(wifi_packet_header_t);
+    data_len -= sizeof(wifi_packet_header_t);
+
+    block_num = wph->sequence_number / (param_data_packets_per_block+param_fec_packets_per_block);//if aram_data_packets_per_block+param_fec_packets_per_block would be limited to powers of two, this could be replaced by a logical AND operation
+
+    //debug_print("adap %d rec %x blk %x crc %d len %d\n", adapter_no, wph->sequence_number, block_num, crc_correct, data_len);
+
+
+    //we have received a block number that exceeds the currently seen ones -> we need to make room for this new block
+    //or we have received a block_num that is several times smaller than the current window of buffers -> this indicated that either the window is too small or that the transmitter has been restarted
+    int tx_restart = (block_num + 128*param_block_buffers < max_block_num);
+    if((block_num > max_block_num || tx_restart) && crc_correct) {
+        if(tx_restart) {
+            fprintf(stderr, "TX RESTART: Detected blk %x that lies outside of the current retr block buffer window (max_block_num = %x) (if there was no tx restart, increase window size via -d)\n", block_num, max_block_num);
+
+
+            block_buffer_list_reset(block_buffer_list, param_block_buffers, param_data_packets_per_block + param_fec_packets_per_block);
+        }
+
+        //first, find the minimum block num in the buffers list. this will be the block that we replace
+        int min_block_num = INT_MAX;
+        int min_block_num_idx;
+        for(i=0; i<param_block_buffers; ++i) {
+            if(block_buffer_list[i].block_num < min_block_num) {
+                min_block_num = block_buffer_list[i].block_num;
+                min_block_num_idx = i;
+            }
+        }
+
+        //debug_print("removing block %x at index %i for block %x\n", min_block_num, min_block_num_idx, block_num);
+
+        packet_buffer_t *packet_buffer_list = block_buffer_list[min_block_num_idx].packet_buffer_list;
+        int last_block_num = block_buffer_list[min_block_num_idx].block_num;
+
+        if(last_block_num != -1) {
+            blocks_received++;
+
+            //we have both pointers to the packet buffers (to get information about crc and vadility) and raw data pointers for fec_decode
+            packet_buffer_t *data_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            packet_buffer_t *fec_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            uint8_t *data_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            uint8_t *fec_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            int datas_missing = 0, datas_corrupt = 0, fecs_missing = 0, fecs_corrupt = 0;
+            int di = 0, fi = 0;
+
+
+            //first, split the received packets into DATA a FEC packets and count the damaged packets
+            i = 0;
+            while(di < param_data_packets_per_block || fi < param_fec_packets_per_block) {
+                if(di < param_data_packets_per_block) {
+                    data_pkgs[di] = packet_buffer_list + i++;
+                    data_blocks[di] = data_pkgs[di]->data;
+                    if(!data_pkgs[di]->valid)
+                        datas_missing++;
+                    if(data_pkgs[di]->valid && !data_pkgs[di]->crc_correct)
+                        datas_corrupt++;
+                    di++;
+                }
+
+                if(fi < param_fec_packets_per_block) {
+                    fec_pkgs[fi] = packet_buffer_list + i++;
+                    if(!fec_pkgs[fi]->valid)
+                        fecs_missing++;
+
+                    if(fec_pkgs[fi]->valid && !fec_pkgs[fi]->crc_correct)
+                        fecs_corrupt++;
+
+                    fi++;
+                }
+            }
+
+            const int good_fecs_c = param_fec_packets_per_block - fecs_missing - fecs_corrupt;
+            const int datas_missing_c = datas_missing;
+            const int datas_corrupt_c = datas_corrupt;
+            const int fecs_missing_c = fecs_missing;
+            const int fecs_corrupt_c = fecs_corrupt;
+
+            int good_fecs = good_fecs_c;
+            //the following three fields are infos for fec_decode
+            unsigned int fec_block_nos[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            unsigned int erased_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
+            unsigned int nr_fec_blocks = 0;
+
+
+#if 0
+            if(datas_missing_c + datas_corrupt_c > good_fecs_c) {
+                int x;
+
+                for(x=0;x<param_data_packets_per_block; ++x) {
+                    if(data_pkgs[x]->valid) {
+                        if(data_pkgs[x]->crc_correct)
+                            fprintf(stderr, "v");
+                        else
+                            fprintf(stderr, "c");
+                    }
+                    else
+                        fprintf(stderr, "m");
+                }
+
+                fprintf(stderr, " ");
+
+                for(x=0;x<param_fec_packets_per_block; ++x) {
+                    if(fec_pkgs[x]->valid) {
+                        if(fec_pkgs[x]->crc_correct)
+                            fprintf(stderr, "v");
+                        else
+                            fprintf(stderr, "c");
+                    }
+                    else
+                        fprintf(stderr, "m");
+                }
+
+                fprintf(stderr, "\n");
+            }
+#endif
+
+            fi = 0;
+            di = 0;
+
+            //look for missing DATA and replace them with good FECs
+            while(di < param_data_packets_per_block && fi < param_fec_packets_per_block) {
+                //if this data is fine we go to the next
+                if(data_pkgs[di]->valid && data_pkgs[di]->crc_correct) {
+                    di++;
+                    continue;
+                }
+
+                //if this DATA is corrupt and there are less good fecs than missing datas we cannot do anything for this data
+                if(data_pkgs[di]->valid && !data_pkgs[di]->crc_correct && good_fecs <= datas_missing) {
+                    di++;
+                    continue;
+                }
+
+                //if this FEC is not received we go on to the next
+                if(!fec_pkgs[fi]->valid) {
+                    fi++;
+                    continue;
+                }
+
+                //if this FEC is corrupted and there are more lost packages than good fecs we should replace this DATA even with this corrupted FEC
+                if(!fec_pkgs[fi]->crc_correct && datas_missing > good_fecs) {
+                    fi++;
+                    continue;
+                }
+
+
+                if(!data_pkgs[di]->valid)
+                    datas_missing--;
+                else if(!data_pkgs[di]->crc_correct)
+                    datas_corrupt--;
+
+                if(fec_pkgs[fi]->crc_correct)
+                    good_fecs--;
+
+                //at this point, data is invalid and fec is good -> replace data with fec
+                erased_blocks[nr_fec_blocks] = di;
+                fec_block_nos[nr_fec_blocks] = fi;
+                fec_blocks[nr_fec_blocks] = fec_pkgs[fi]->data;
+                di++;
+                fi++;
+                nr_fec_blocks++;
+            }
+
+
+            int reconstruction_failed = datas_missing_c + datas_corrupt_c > good_fecs_c;
+
+            if(reconstruction_failed) {
+                //we did not have enough FEC packets to repair this block
+                blocks_damaged++;
+                fprintf(stderr, "Could not fully reconstruct block %x! Damage rate: %f (%d / %d blocks)\n", last_block_num, 1.0 * blocks_damaged / blocks_received, blocks_damaged, blocks_received);
+                debug_print("Data mis: %d\tData corr: %d\tFEC mis: %d\tFEC corr: %d\n", datas_missing_c, datas_corrupt_c, fecs_missing_c, fecs_corrupt_c);
+            }
+
+
+            //decode data and write it to STDOUT
+            fec_decode((unsigned int) param_packet_length, data_blocks, param_data_packets_per_block, fec_blocks, fec_block_nos, erased_blocks, nr_fec_blocks);
+            for(i=0; i<param_data_packets_per_block; ++i) {
+                payload_header_t *ph = (payload_header_t*)data_blocks[i];
+
+                if(!reconstruction_failed || data_pkgs[i]->valid) {
+                    //if reconstruction did fail, the data_length value is undefined. better limit it to some sensible value
+                    if(ph->data_length > param_packet_length)
+                        ph->data_length = param_packet_length;
+
+                    write(STDOUT_FILENO, data_blocks[i] + sizeof(payload_header_t), ph->data_length);
+                }
+            }
+
+
+            //reset buffers
+            for(i=0; i<param_data_packets_per_block + param_fec_packets_per_block; ++i) {
+                packet_buffer_t *p = packet_buffer_list + i;
+                p->valid = 0;
+                p->crc_correct = 0;
+                p->len = 0;
+            }
+        }
+
+    block_buffer_list[min_block_num_idx].block_num = block_num;
+    max_block_num = block_num;
+    }
+
+
+    //find the buffer into which we have to write this packet
+    block_buffer_t *rbb = block_buffer_list;
+    for(i=0; i<param_block_buffers; ++i) {
+        if(rbb->block_num == block_num) {
+            break;
+        }
+        rbb++;
+    }
+
+    //check if we have actually found the corresponding block. this could not be the case due to a corrupt packet
+    if(i != param_block_buffers) {
+        packet_buffer_t *packet_buffer_list = rbb->packet_buffer_list;
+        packet_num = wph->sequence_number % (param_data_packets_per_block+param_fec_packets_per_block); //if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
+
+        //only overwrite packets where the checksum is not yet correct. otherwise the packets are already received correctly
+        if(packet_buffer_list[packet_num].crc_correct == 0) {
+            memcpy(packet_buffer_list[packet_num].data, data, data_len);
+            packet_buffer_list[packet_num].len = data_len;
+            packet_buffer_list[packet_num].valid = 1;
+            packet_buffer_list[packet_num].crc_correct = crc_correct;
+        }
+    }
+
+}
+
+
+void process_packet(monitor_interface_t *interface, block_buffer_t *block_buffer_list, int adapter_no) {
 		struct pcap_pkthdr * ppcapPacketHeader = NULL;
 		struct ieee80211_radiotap_iterator rti;
 		PENUMBRA_RADIOTAP_DATA prd;
@@ -147,13 +412,8 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 		u8 *pu8Payload = payloadBuffer;
 		int bytes;
 		int n;
-		uint32_t seq_nr;
-		int block_num;
-		int packet_num;
-		int checksum_correct;
 		int retval;
 		int u16HeaderLen;
-		int i;
 
 		// receive
 
@@ -219,104 +479,9 @@ void process_packet(monitor_interface_t *interface, retransmission_block_buffer_
 			bytes -= 4;
 
 
-		checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0; 
+        int checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0;
 
-		//first 4 bytes are the sequence number
-		seq_nr = *(uint32_t*)pu8Payload;
-		pu8Payload += 4;
-		bytes -= 4;
-
-		block_num = seq_nr / param_retransmission_block_size;//if retr_block_size would be limited to powers of two, this could be replaced by a logical AND operation
-
-		debug_print("adap %d rec %x blk %x crc %d\n", adapter_no, seq_nr, block_num, checksum_correct);
-
-
-		//we have received a block number that exceeds the currently seen ones -> we need to make room for this new block
-		//or we have received a block_num that is several times smaller than the current window of buffers -> this indicated that either the window is too small or that the transmitter has been restarted
-		int tx_restart = (block_num + 128*param_retransmission_block_buffers < max_block_num);
-		if((block_num > max_block_num || tx_restart) && checksum_correct) {
-			if(tx_restart) {
-				fprintf(stderr, "TX RESTART: Detected blk %x that lies outside of the current retr block buffer window (max_block_num = %x) (if there was no tx restart, increase window size via -d)\n", block_num, max_block_num);
-
-
-				//clear the old buffers TODO: move this into a function
-				for(i=0; i<param_retransmission_block_buffers; ++i) {
-					retransmission_block_buffer_t *rb = retransmission_block_buffer_list + i;
-					rb->block_num = -1;
-
-					int j;
-					for(j=0; j<param_retransmission_block_size; ++j) {
-						packet_buffer_t *p = rb->packet_buffer_list + j;
-						p->valid = 0;
-						p->crc_correct = 0;
-						p->len = 0;
-					}
-				}
-			}
-
-			//first, find the minimum block num in the buffers list. this will be the block that we replace
-			int min_block_num = INT_MAX;
-			int min_block_num_idx;
-			for(i=0; i<param_retransmission_block_buffers; ++i) {
-				if(retransmission_block_buffer_list[i].block_num < min_block_num) {
-					min_block_num = retransmission_block_buffer_list[i].block_num;
-					min_block_num_idx = i;
-				}
-			}
-
-			debug_print("removing block %x at index %i for block %x\n", min_block_num, min_block_num_idx, block_num);
-		
-			packet_buffer_t *packet_buffer_list = retransmission_block_buffer_list[min_block_num_idx].packet_buffer_list;
-			int last_block_num = retransmission_block_buffer_list[min_block_num_idx].block_num;
-
-			if(last_block_num != -1) {
-				//write out old block
-				for(i=0; i<param_retransmission_block_size; ++i) {
-					packet_buffer_t *p = packet_buffer_list + i;
-					num_sent++;
-					if(p->valid) {
-						write(STDOUT_FILENO, p->data, p->len);
-						if(p->crc_correct == 0)
-							fprintf(stderr, "wrong crc on pkg %x in block %x\n", last_block_num * param_retransmission_block_size + i, last_block_num);
-					}
-					else {
-						fprintf(stderr, "Lost a packet %x! Lossrate: %f\t(%d / %d)\n", i + last_block_num * param_retransmission_block_size, 1.0 * num_lost / num_sent, num_lost, num_sent);
-						num_lost++;
-					}
-
-					p->valid = 0;
-					p->crc_correct = 0;
-					p->len = 0;
-				}
-			}
-
-		retransmission_block_buffer_list[min_block_num_idx].block_num = block_num;
-		max_block_num = block_num;
-		}
-
-
-	//find the buffer into which we have to write this packet
-	retransmission_block_buffer_t *rbb = retransmission_block_buffer_list;
-	for(i=0; i<param_retransmission_block_buffers; ++i) {
-		if(rbb->block_num == block_num) {
-			break;
-			}
-		rbb++;
-		}
-
-		//check if we have actually found the corresponding block. this could not be the case due to a corrupt packet
-		if(i != param_retransmission_block_buffers) {
-			packet_buffer_t *packet_buffer_list = rbb->packet_buffer_list;
-			packet_num = seq_nr % param_retransmission_block_size; //if retr_block_size would be limited to powers of two, this could be replace by a locical and operation
-
-			//only overwrite packets where the checksum is not yet correct. otherwise the packets are already received correctly
-			if(packet_buffer_list[packet_num].crc_correct == 0) {
-				memcpy(packet_buffer_list[packet_num].data, pu8Payload, bytes);
-				packet_buffer_list[packet_num].len = bytes;
-				packet_buffer_list[packet_num].valid = 1;
-				packet_buffer_list[packet_num].crc_correct = checksum_correct;
-			}
-		}
+        process_payload(pu8Payload, bytes, checksum_correct, block_buffer_list, adapter_no);
 }
 
 int
@@ -326,7 +491,7 @@ main(int argc, char *argv[])
 	int num_interfaces = 0;
 	int i;
 
-	retransmission_block_buffer_t *retransmission_block_buffer_list;
+    block_buffer_t *block_buffer_list;
 
 
 	while (1) {
@@ -335,7 +500,7 @@ main(int argc, char *argv[])
 			{ "help", no_argument, &flagHelp, 1 },
 			{ 0, 0, 0, 0 }
 		};
-		int c = getopt_long(argc, argv, "hp:b:d:",
+		int c = getopt_long(argc, argv, "hp:b:d:r:f:",
 			optiona, &nOptionIndex);
 
 		if (c == -1)
@@ -351,12 +516,20 @@ main(int argc, char *argv[])
 			param_port = atoi(optarg);
 			break;
 		
-		case 'b': //retransmission block size
-			param_retransmission_block_size = atoi(optarg);
+		case 'b': 
+			param_data_packets_per_block = atoi(optarg);
 			break;
 
+		case 'r': 
+			param_fec_packets_per_block = atoi(optarg);
+			break;
+		
 		case 'd':
-			param_retransmission_block_buffers = atoi(optarg);
+            param_block_buffers = atoi(optarg);
+			break;
+		
+		case 'f': // MTU
+			param_packet_length = atoi(optarg);
 			break;
 
 		default:
@@ -368,6 +541,15 @@ main(int argc, char *argv[])
 
 	if (optind >= argc)
 		usage();
+	
+	
+	if(param_packet_length > MAX_USER_PACKET_LENGTH) {
+		printf("Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_packet_length);
+		return (1);
+	}
+
+
+	fec_init();
 
 	int x = optind;
 	while(x < argc && num_interfaces < MAX_PENUMBRA_INTERFACES) {
@@ -377,12 +559,12 @@ main(int argc, char *argv[])
 	}
 
 
-	//retransmission block buffers contain both the block_num as well as packet buffers for a retransmission block.
-	retransmission_block_buffer_list = malloc(sizeof(retransmission_block_buffer_t) * param_retransmission_block_buffers);
-	for(i=0; i<param_retransmission_block_buffers; ++i)
+    //block buffers contain both the block_num as well as packet buffers for a block.
+    block_buffer_list = malloc(sizeof(block_buffer_t) * param_block_buffers);
+    for(i=0; i<param_block_buffers; ++i)
 	{
-		retransmission_block_buffer_list[i].block_num = -1;
-		retransmission_block_buffer_list[i].packet_buffer_list = lib_alloc_packet_buffer_list(param_retransmission_block_size, MAX_PACKET_LENGTH);
+        block_buffer_list[i].block_num = -1;
+        block_buffer_list[i].packet_buffer_list = lib_alloc_packet_buffer_list(param_data_packets_per_block+param_fec_packets_per_block, MAX_PACKET_LENGTH);
 	}
 
 
@@ -404,7 +586,7 @@ main(int argc, char *argv[])
 				break;
 
 			if(FD_ISSET(interfaces[i].selectable_fd, &readset)) {
-				process_packet(interfaces + i, retransmission_block_buffer_list, i);
+                process_packet(interfaces + i, block_buffer_list, i);
 			}
 		}
 
