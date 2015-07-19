@@ -270,10 +270,10 @@ main(int argc, char *argv[])
 	int max_fifo_fd = -1;
 	fifo_t fifo[MAX_FIFOS];
 
-	int param_fec_packets_per_block = 0;
+    int param_data_packets_per_block = 8;
+    int param_fec_packets_per_block = 4;
 	int param_packet_length = MAX_USER_PACKET_LENGTH;
 	int param_port = 0;
-	int param_data_packets_per_block = 1;
 	int param_min_packet_length = 0;
 	int param_fifo_count = 1;
 

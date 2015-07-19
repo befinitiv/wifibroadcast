@@ -50,9 +50,9 @@ typedef struct  {
 
 int flagHelp = 0;
 int param_port = 0;
-int param_data_packets_per_block = 1;
+int param_data_packets_per_block = 8;
+int param_fec_packets_per_block = 4;
 int param_block_buffers = 1;
-int param_fec_packets_per_block = 0;
 int param_packet_length = MAX_USER_PACKET_LENGTH;
 int blocks_received = 0, blocks_damaged = 0;
 int max_block_num = -1;
