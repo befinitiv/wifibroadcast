@@ -65,15 +65,16 @@ usage(void)
 	    "\n"
 	    "Usage: rx [options] <interfaces>\n\nOptions\n"
 			"-p <port> Port number 0-255 (default 0)\n"
-			"-b <count> Number of data packets in a block (default 1). Needs to match with tx.\n"
-	    "-r <count> Number of FEC packets per block (default 0). Needs to match with tx.\n\n"
+			"-b <count> Number of data packets in a block (default 8). Needs to match with tx.\n"
+	    "-r <count> Number of FEC packets per block (default 4). Needs to match with tx.\n\n"
 	    "-f <bytes> Number of bytes per packet (default %d. max %d). This is also the FEC block size. Needs to match with tx\n"
 			"-d <blocks> Number of transmissions blocks that are buffered (default 1). This is needed in case of diversity if one adapter delivers data faster than the other. Note that this increases latency\n"
 	    "Example:\n"
-	    "  echo -n mon0 > /sys/class/ieee80211/phy0/add_iface\n"
-	    "  iwconfig mon0 mode monitor\n"
-	    "  ifconfig mon0 up\n"
-	    "  rx mon0        Receive raw packets on mon0 and output the payload to stdout\n"
+	    "  iwconfig wlan0 down\n"
+	    "  iw dev wlan0 set monitor otherbss fcsfail\n"
+	    "  ifconfig wlan0 up\n"
+			"  iwconfig wlan0 channel 13\n"
+	    "  rx wlan0        Receive raw packets on wlan0 and output the payload to stdout\n"
 	    "\n", MAX_USER_PACKET_LENGTH, MAX_USER_PACKET_LENGTH);
 	exit(1);
 }
