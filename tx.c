@@ -80,6 +80,7 @@ usage(void)
 	    "-f <bytes> Number of bytes per packet (default %d. max %d). This is also the FEC block size. Needs to match with rx\n"
 			"-p <port> Port number 0-255 (default 0)\n"
 			"-b <count> Number of data packets in a block (default 8). Needs to match with rx.\n"
+			"-x <count> Number of transmissions of a block (default 1)\n"
 			"-m <bytes> Minimum number of bytes per frame (default: 0)\n"
 			"-s <stream> If <stream> is > 1 then the parameter changes \"tx\" input from stdin to named fifos. Each fifo transports a stream over a different port (starting at -p port and incrementing). Fifo names are \"%s\". (default 1)\n"
 	    "Example:\n"
@@ -209,7 +210,7 @@ void pb_transmit_packet(pcap_t *ppcap, int seq_nr, uint8_t *packet_transmit_buff
 
 
 
-void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int port, int packet_length, uint8_t *packet_transmit_buffer, int packet_header_len, int data_packets_per_block, int fec_packets_per_block) {
+void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int port, int packet_length, uint8_t *packet_transmit_buffer, int packet_header_len, int data_packets_per_block, int fec_packets_per_block, int transmission_count) {
 	int i;
 	uint8_t *data_blocks[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
 	uint8_t fec_pool[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK][MAX_USER_PACKET_LENGTH];
@@ -220,38 +221,49 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
 		data_blocks[i] = pbl[i].data;
 	}
 
-	for(i=0; i<fec_packets_per_block; ++i) {
-		fec_blocks[i] = fec_pool[i];
-	}
 
-	fec_encode(packet_length, data_blocks, data_packets_per_block, (unsigned char **)fec_blocks, fec_packets_per_block);
-
-    uint8_t *pb = packet_transmit_buffer;
-    set_port_no(pb, port);
-    pb += packet_header_len;
-
-	//send data and FEC packets interleaved
-	int di = 0; 
-	int fi = 0;
-	while(di < data_packets_per_block || fi < fec_packets_per_block) {
-		if(di < data_packets_per_block) {
-            pb_transmit_packet(ppcap, *seq_nr, packet_transmit_buffer, packet_header_len, data_blocks[di], packet_length);
-            *seq_nr = *seq_nr + 1;
-            di++;
+	if(fec_packets_per_block) {
+		for(i=0; i<fec_packets_per_block; ++i) {
+			fec_blocks[i] = fec_pool[i];
 		}
 
-        if(fi < fec_packets_per_block) {
-            pb_transmit_packet(ppcap, *seq_nr, packet_transmit_buffer, packet_header_len, fec_blocks[fi], packet_length);
-            *seq_nr = *seq_nr + 1;
-            fi++;
-		}
-			
+		fec_encode(packet_length, data_blocks, data_packets_per_block, (unsigned char **)fec_blocks, fec_packets_per_block);
 	}
 
-    //reset the length back
-    for(i=0; i< data_packets_per_block; ++i) {
-        pbl[i].len = 0;
-    }
+	uint8_t *pb = packet_transmit_buffer;
+	set_port_no(pb, port);
+	pb += packet_header_len;
+
+
+	int x;
+	for(x=0; x<transmission_count; ++x) {
+		//send data and FEC packets interleaved
+		int di = 0; 
+		int fi = 0;
+		int seq_nr_tmp = *seq_nr;
+		while(di < data_packets_per_block || fi < fec_packets_per_block) {
+			if(di < data_packets_per_block) {
+				pb_transmit_packet(ppcap, seq_nr_tmp, packet_transmit_buffer, packet_header_len, data_blocks[di], packet_length);
+				seq_nr_tmp++;
+				di++;
+			}
+
+			if(fi < fec_packets_per_block) {
+				pb_transmit_packet(ppcap, seq_nr_tmp, packet_transmit_buffer, packet_header_len, fec_blocks[fi], packet_length);
+				seq_nr_tmp++;
+				fi++;
+			}	
+		}
+	}
+
+	*seq_nr += data_packets_per_block + fec_packets_per_block;
+
+
+
+	//reset the length back
+	for(i=0; i< data_packets_per_block; ++i) {
+			pbl[i].len = 0;
+	}
 
 }
 
@@ -271,6 +283,7 @@ main(int argc, char *argv[])
 	int max_fifo_fd = -1;
 	fifo_t fifo[MAX_FIFOS];
 
+		int param_transmission_count = 1;
     int param_data_packets_per_block = 8;
     int param_fec_packets_per_block = 4;
 	int param_packet_length = MAX_USER_PACKET_LENGTH;
@@ -288,7 +301,7 @@ main(int argc, char *argv[])
 			{ "help", no_argument, &flagHelp, 1 },
 			{ 0, 0, 0, 0 }
 		};
-		int c = getopt_long(argc, argv, "r:hf:p:b:m:s:",
+		int c = getopt_long(argc, argv, "r:hf:p:b:m:s:x:",
 			optiona, &nOptionIndex);
 
 		if (c == -1)
@@ -322,6 +335,10 @@ main(int argc, char *argv[])
 
 		case 's': //how many streams (fifos) do we have in parallel
 			param_fifo_count = atoi(optarg);
+			break;
+
+		case 'x': //how often is a block transmitted
+			param_transmission_count = atoi(optarg);
 			break;
 
 		default:
@@ -436,7 +453,7 @@ main(int argc, char *argv[])
 
 				//check if this block is finished
 				if(fifo[i].curr_pb == param_data_packets_per_block-1) {
-                    pb_transmit_block(fifo[i].pbl, ppcap, &(fifo[i].seq_nr), i+param_port, param_packet_length, packet_transmit_buffer, packet_header_length, param_data_packets_per_block, param_fec_packets_per_block);
+                    pb_transmit_block(fifo[i].pbl, ppcap, &(fifo[i].seq_nr), i+param_port, param_packet_length, packet_transmit_buffer, packet_header_length, param_data_packets_per_block, param_fec_packets_per_block, param_transmission_count);
 					fifo[i].curr_pb = 0;
 				}
 				else {
