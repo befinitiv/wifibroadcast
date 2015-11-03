@@ -8,6 +8,8 @@
 #include <getopt.h>
 #include <pcap.h>
 #include <endian.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 
 typedef unsigned int u32;
 typedef unsigned short u16;

@@ -1,6 +1,16 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+
+typedef struct {
+	uint32_t received_packet_cnt;
+	uint32_t received_block_cnt;
+	uint32_t damaged_block_cnt;
+	uint32_t wrong_crc_cnt;
+	uint32_t tx_restart_cnt;
+	int8_t current_signal_dbm;
+} wifibroadcast_rx_status_t;
+
 typedef struct {
 	int valid;
 	int crc_correct;
