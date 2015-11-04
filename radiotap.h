@@ -1,3 +1,5 @@
+#pragma once
+
 #include "ieee80211_radiotap.h"
 
 /* Radiotap header iteration

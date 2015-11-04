@@ -35,8 +35,7 @@
  * Mike Kershaw (dragorn@kismetwireless.net)
  */
 
-#ifndef IEEE80211RADIOTAP_H
-#define IEEE80211RADIOTAP_H
+#pragma once
 
 #include <linux/if_ether.h>
 #include <linux/kernel.h>
@@ -257,4 +256,3 @@ enum ieee80211_radiotap_type {
 	(((x) == 14) ? 2484 : ((x) * 5) + 2407) : \
 	((x) + 1000) * 5)
 
-#endif				/* IEEE80211_RADIOTAP_H */
