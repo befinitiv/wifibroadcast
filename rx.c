@@ -476,7 +476,7 @@ void process_packet(monitor_interface_t *interface, block_buffer_t *block_buffer
 				break;
 
 			case IEEE80211_RADIOTAP_DBM_ANTSIGNAL:
-				rx_status->current_signal_dbm = (int8_t)(*rti.this_arg);
+				rx_status->adapter[adapter_no].current_signal_dbm = (int8_t)(*rti.this_arg);
 				break;
 
 			}
@@ -490,15 +490,33 @@ void process_packet(monitor_interface_t *interface, block_buffer_t *block_buffer
         int checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0;
 
 		if(!checksum_correct)
-			rx_status->wrong_crc_cnt++;
+			rx_status->adapter[adapter_no].wrong_crc_cnt++;
 
-		rx_status->received_packet_cnt++;
+		rx_status->adapter[adapter_no].received_packet_cnt++;
 		
-		if(rx_status->received_packet_cnt % 1024 == 0) {
-			fprintf(stderr, "Signal: %ddBm\n", rx_status->current_signal_dbm);
+		if(rx_status->adapter[adapter_no].received_packet_cnt % 1024 == 0) {
+			fprintf(stderr, "Signal (card %d): %ddBm\n", adapter_no, rx_status->adapter[adapter_no].current_signal_dbm);
 		}
 
+		rx_status->last_update = time(NULL);
+
         process_payload(pu8Payload, bytes, checksum_correct, block_buffer_list, adapter_no);
+}
+
+
+
+void status_memory_init(wifibroadcast_rx_status_t *s) {
+	s->received_block_cnt = 0;
+	s->damaged_block_cnt = 0;
+	s->tx_restart_cnt = 0;
+	s->wifi_adapter_cnt = 0;
+
+	int i;
+	for(i=0; i<MAX_PENUMBRA_INTERFACES; ++i) {
+		s->adapter[i].received_packet_cnt = 0;
+		s->adapter[i].wrong_crc_cnt = 0;
+		s->adapter[i].current_signal_dbm = 0;
+	}
 }
 
 
@@ -522,13 +540,7 @@ wifibroadcast_rx_status_t *status_memory_open(void) {
 	}
 	
 	wifibroadcast_rx_status_t *tretval = (wifibroadcast_rx_status_t*)retval;
-	tretval->received_block_cnt = 0;
-	tretval->damaged_block_cnt = 0;
-	tretval->received_packet_cnt = 0;
-	tretval->wrong_crc_cnt = 0;
-	tretval->tx_restart_cnt = 0;
-	tretval->current_signal_dbm = 0;
-
+	status_memory_init(tretval);
 	
 	return tretval;
 
@@ -619,6 +631,7 @@ main(int argc, char *argv[])
 
 
 	rx_status = status_memory_open();
+	rx_status->wifi_adapter_cnt = num_interfaces;
 
 	for(;;) { 
 		fd_set readset;

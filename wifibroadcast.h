@@ -1,3 +1,7 @@
+
+
+#pragma once
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -9,6 +13,7 @@
 #include <pcap.h>
 #include <endian.h>
 #include <fcntl.h>
+#include <time.h>
 #include <sys/mman.h>
 
 typedef unsigned int u32;
