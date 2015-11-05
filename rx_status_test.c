@@ -14,7 +14,7 @@
 #include "lib.h"
 
 wifibroadcast_rx_status_t *status_memory_open(void) {
-	int fd = shm_open("/wifibroadcast_rx_status", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+	int fd = shm_open("/wifibroadcast_rx_status_0", O_RDWR, S_IRUSR | S_IWUSR);
 
 	if(fd < 0) {
 		perror("shm_open");

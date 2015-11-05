@@ -521,7 +521,11 @@ void status_memory_init(wifibroadcast_rx_status_t *s) {
 
 
 wifibroadcast_rx_status_t *status_memory_open(void) {
-	int fd = shm_open("/wifibroadcast_rx_status", O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+	char buf[128];
+	int fd;
+	
+	sprintf(buf, "/wifibroadcast_rx_status_%d", param_port);
+	fd = shm_open(buf, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
 
 	if(fd < 0) {
 		perror("shm_open");
