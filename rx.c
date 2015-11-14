@@ -54,7 +54,7 @@ int param_data_packets_per_block = 8;
 int param_fec_packets_per_block = 4;
 int param_block_buffers = 1;
 int param_packet_length = MAX_USER_PACKET_LENGTH;
-int blocks_received = 0, blocks_damaged = 0;
+wifibroadcast_rx_status_t *rx_status = NULL;
 int max_block_num = -1;
 
 void
@@ -189,6 +189,8 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
     int tx_restart = (block_num + 128*param_block_buffers < max_block_num);
     if((block_num > max_block_num || tx_restart) && crc_correct) {
         if(tx_restart) {
+						rx_status->tx_restart_cnt++;
+
             fprintf(stderr, "TX RESTART: Detected blk %x that lies outside of the current retr block buffer window (max_block_num = %x) (if there was no tx restart, increase window size via -d)\n", block_num, max_block_num);
 
 
@@ -211,7 +213,7 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
         int last_block_num = block_buffer_list[min_block_num_idx].block_num;
 
         if(last_block_num != -1) {
-            blocks_received++;
+            rx_status->received_block_cnt++;
 
             //we have both pointers to the packet buffers (to get information about crc and vadility) and raw data pointers for fec_decode
             packet_buffer_t *data_pkgs[MAX_DATA_OR_FEC_PACKETS_PER_BLOCK];
@@ -344,8 +346,8 @@ void process_payload(uint8_t *data, size_t data_len, int crc_correct, block_buff
 
             if(reconstruction_failed) {
                 //we did not have enough FEC packets to repair this block
-                blocks_damaged++;
-                fprintf(stderr, "Could not fully reconstruct block %x! Damage rate: %f (%d / %d blocks)\n", last_block_num, 1.0 * blocks_damaged / blocks_received, blocks_damaged, blocks_received);
+                rx_status->damaged_block_cnt++;
+                fprintf(stderr, "Could not fully reconstruct block %x! Damage rate: %f (%d / %d blocks)\n", last_block_num, 1.0 * rx_status->damaged_block_cnt / rx_status->received_block_cnt, rx_status->damaged_block_cnt, rx_status->received_block_cnt);
                 debug_print("Data mis: %d\tData corr: %d\tFEC mis: %d\tFEC corr: %d\n", datas_missing_c, datas_corrupt_c, fecs_missing_c, fecs_corrupt_c);
             }
 
@@ -472,6 +474,11 @@ void process_packet(monitor_interface_t *interface, block_buffer_t *block_buffer
 			case IEEE80211_RADIOTAP_FLAGS:
 				prd.m_nRadiotapFlags = *rti.this_arg;
 				break;
+
+			case IEEE80211_RADIOTAP_DBM_ANTSIGNAL:
+				rx_status->adapter[adapter_no].current_signal_dbm = (int8_t)(*rti.this_arg);
+				break;
+
 			}
 		}
 		pu8Payload += u16HeaderLen + interface->n80211HeaderLength;
@@ -482,7 +489,65 @@ void process_packet(monitor_interface_t *interface, block_buffer_t *block_buffer
 
         int checksum_correct = (prd.m_nRadiotapFlags & 0x40) == 0;
 
+		if(!checksum_correct)
+			rx_status->adapter[adapter_no].wrong_crc_cnt++;
+
+		rx_status->adapter[adapter_no].received_packet_cnt++;
+		
+		if(rx_status->adapter[adapter_no].received_packet_cnt % 1024 == 0) {
+			fprintf(stderr, "Signal (card %d): %ddBm\n", adapter_no, rx_status->adapter[adapter_no].current_signal_dbm);
+		}
+
+		rx_status->last_update = time(NULL);
+
         process_payload(pu8Payload, bytes, checksum_correct, block_buffer_list, adapter_no);
+}
+
+
+
+void status_memory_init(wifibroadcast_rx_status_t *s) {
+	s->received_block_cnt = 0;
+	s->damaged_block_cnt = 0;
+	s->tx_restart_cnt = 0;
+	s->wifi_adapter_cnt = 0;
+
+	int i;
+	for(i=0; i<MAX_PENUMBRA_INTERFACES; ++i) {
+		s->adapter[i].received_packet_cnt = 0;
+		s->adapter[i].wrong_crc_cnt = 0;
+		s->adapter[i].current_signal_dbm = 0;
+	}
+}
+
+
+wifibroadcast_rx_status_t *status_memory_open(void) {
+	char buf[128];
+	int fd;
+	
+	sprintf(buf, "/wifibroadcast_rx_status_%d", param_port);
+	fd = shm_open(buf, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+
+	if(fd < 0) {
+		perror("shm_open");
+		exit(1);
+	}
+
+	if (ftruncate(fd, sizeof(wifibroadcast_rx_status_t)) == -1) {
+		perror("ftruncate");
+		exit(1);
+	}
+
+	void *retval = mmap(NULL, sizeof(wifibroadcast_rx_status_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (retval == MAP_FAILED) {
+		perror("mmap");
+		exit(1);
+	}
+	
+	wifibroadcast_rx_status_t *tretval = (wifibroadcast_rx_status_t*)retval;
+	status_memory_init(tretval);
+	
+	return tretval;
+
 }
 
 int
@@ -568,6 +633,9 @@ main(int argc, char *argv[])
         block_buffer_list[i].packet_buffer_list = lib_alloc_packet_buffer_list(param_data_packets_per_block+param_fec_packets_per_block, MAX_PACKET_LENGTH);
 	}
 
+
+	rx_status = status_memory_open();
+	rx_status->wifi_adapter_cnt = num_interfaces;
 
 	for(;;) { 
 		fd_set readset;
