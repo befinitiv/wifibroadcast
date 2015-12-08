@@ -393,7 +393,7 @@ main(int argc, char *argv[])
 	}
 
 
-	pcap_setnonblock(ppcap, 1, szErrbuf);
+	pcap_setnonblock(ppcap, 0, szErrbuf);
 
 
 
