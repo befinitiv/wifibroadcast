@@ -151,7 +151,7 @@ void fifo_open(fifo_t *fifo, int fifo_count) {
 			
 			unlink(fn);
 			if(mkfifo(fn, 0666) != 0) {
-				printf("Error creating FIFO \"%s\"\n", fn);
+				fprintf(stderr, "Error creating FIFO \"%s\"\n", fn);
 				exit(1);
 			}
 		}
@@ -163,7 +163,7 @@ void fifo_open(fifo_t *fifo, int fifo_count) {
 			
 			printf("Waiting for \"%s\" being opened from the data source... \n", fn);			
 			if((fifo[i].fd = open(fn, O_RDONLY)) < 0) {
-				printf("Error opening FIFO \"%s\"\n", fn);
+				fprintf(stderr, "Error opening FIFO \"%s\"\n", fn);
 				exit(1);
 			}
 			printf("OK\n");
@@ -342,7 +342,7 @@ main(int argc, char *argv[])
 			break;
 
 		default:
-			printf("unknown switch %c\n", c);
+			fprintf(stderr, "unknown switch %c\n", c);
 			usage();
 			break;
 		}
@@ -353,22 +353,22 @@ main(int argc, char *argv[])
 
 	
 	if(param_packet_length > MAX_USER_PACKET_LENGTH) {
-		printf("Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_packet_length);
+		fprintf(stderr, "Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_packet_length);
 		return (1);
 	}
 
 	if(param_min_packet_length > param_packet_length) {
-		printf("Your minimum packet length is higher that your maximum packet length (%d > %d)\n", param_min_packet_length, param_packet_length);
+		fprintf(stderr, "Your minimum packet length is higher that your maximum packet length (%d > %d)\n", param_min_packet_length, param_packet_length);
 		return (1);
 	}
 
 	if(param_fifo_count > MAX_FIFOS) {
-		printf("The maximum number of streams (FIFOS) is %d (you requested %d)\n", MAX_FIFOS, param_fifo_count);
+		fprintf(stderr, "The maximum number of streams (FIFOS) is %d (you requested %d)\n", MAX_FIFOS, param_fifo_count);
 		return (1);
 	}
 
 	if(param_data_packets_per_block > MAX_DATA_OR_FEC_PACKETS_PER_BLOCK || param_fec_packets_per_block > MAX_DATA_OR_FEC_PACKETS_PER_BLOCK) {
-		printf("Data and FEC packets per block are limited to %d (you requested %d data, %d FEC)\n", MAX_DATA_OR_FEC_PACKETS_PER_BLOCK, param_data_packets_per_block, param_fec_packets_per_block);
+		fprintf(stderr, "Data and FEC packets per block are limited to %d (you requested %d data, %d FEC)\n", MAX_DATA_OR_FEC_PACKETS_PER_BLOCK, param_data_packets_per_block, param_fec_packets_per_block);
 		return (1);
 	}
 
@@ -387,7 +387,7 @@ main(int argc, char *argv[])
 	szErrbuf[0] = '\0';
 	ppcap = pcap_open_live(argv[optind], 800, 1, 20, szErrbuf);
 	if (ppcap == NULL) {
-		printf("Unable to open interface %s in pcap: %s\n",
+		fprintf(stderr, "Unable to open interface %s in pcap: %s\n",
 		    argv[optind], szErrbuf);
 		return (1);
 	}
@@ -438,7 +438,7 @@ main(int argc, char *argv[])
 
 			if(inl == 0) {
 				//EOF
-				printf("Warning: Lost connection to fifo %d. Please make sure that a data source is connected\n", i);
+				fprintf(stderr, "Warning: Lost connection to fifo %d. Please make sure that a data source is connected\n", i);
 				usleep(1e5);
 				continue;
 			}
@@ -464,7 +464,7 @@ main(int argc, char *argv[])
 		}
 
 
-		if(pcnt % 64 == 0) {
+		if(pcnt % 128 == 0) {
 			printf("%d data packets sent (interface rate: %.3f)\n", pcnt, 1.0 * pcnt / param_data_packets_per_block * (param_data_packets_per_block + param_fec_packets_per_block) / (time(NULL) - start_time));
 		}
 
