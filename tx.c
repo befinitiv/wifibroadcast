@@ -44,9 +44,9 @@ static const u8 u8aRadiotapHeader[] = {
 	0x00, 0x00, // <-- radiotap version
 	0x0c, 0x00, // <- radiotap header lengt
 	0x04, 0x80, 0x00, 0x00, // <-- bitmap
-	0x22, 
-	0x0, 
-	0x18, 0x00 
+	0x22,
+	0x0,
+	0x18, 0x00
 };
 
 /* Penumbra IEEE80211 header */
@@ -107,7 +107,7 @@ typedef struct {
 	packet_buffer_t *pbl;
 } fifo_t;
 
-	
+
 
 int packet_header_init(uint8_t *packet_header) {
 			u8 *pu8 = packet_header;
@@ -115,7 +115,7 @@ int packet_header_init(uint8_t *packet_header) {
 			pu8 += sizeof(u8aRadiotapHeader);
 			memcpy(pu8, u8aIeeeHeader, sizeof (u8aIeeeHeader));
 			pu8 += sizeof (u8aIeeeHeader);
-					
+
 			//determine the length of the header
 			return pu8 - packet_header;
 }
@@ -143,25 +143,25 @@ void fifo_open(fifo_t *fifo, int fifo_count) {
 	int i;
 	if(fifo_count > 1) {
 		//new FIFO style
-		
+
 		//first, create all required fifos
 		for(i=0; i<fifo_count; ++i) {
 			char fn[256];
 			sprintf(fn, FIFO_NAME, i);
-			
+
 			unlink(fn);
 			if(mkfifo(fn, 0666) != 0) {
 				fprintf(stderr, "Error creating FIFO \"%s\"\n", fn);
 				exit(1);
 			}
 		}
-		
+
 		//second: wait for the data sources to connect
 		for(i=0; i<fifo_count; ++i) {
 			char fn[256];
 			sprintf(fn, FIFO_NAME, i);
-			
-			printf("Waiting for \"%s\" being opened from the data source... \n", fn);			
+
+			printf("Waiting for \"%s\" being opened from the data source... \n", fn);
 			if((fifo[i].fd = open(fn, O_RDONLY)) < 0) {
 				fprintf(stderr, "Error opening FIFO \"%s\"\n", fn);
 				exit(1);
@@ -180,7 +180,7 @@ void fifo_create_select_set(fifo_t *fifo, int fifo_count, fd_set *fifo_set, int 
 	int i;
 
 	FD_ZERO(fifo_set);
-	
+
 	for(i=0; i<fifo_count; ++i) {
 		FD_SET(fifo[i].fd, fifo_set);
 
@@ -238,7 +238,7 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
 	int x;
 	for(x=0; x<transmission_count; ++x) {
 		//send data and FEC packets interleaved
-		int di = 0; 
+		int di = 0;
 		int fi = 0;
 		int seq_nr_tmp = *seq_nr;
 		while(di < data_packets_per_block || fi < fec_packets_per_block) {
@@ -252,7 +252,7 @@ void pb_transmit_block(packet_buffer_t *pbl, pcap_t *ppcap, int *seq_nr, int por
 				pb_transmit_packet(ppcap, seq_nr_tmp, packet_transmit_buffer, packet_header_len, fec_blocks[fi], packet_length);
 				seq_nr_tmp++;
 				fi++;
-			}	
+			}
 		}
 	}
 
@@ -351,7 +351,7 @@ main(int argc, char *argv[])
 	if (optind >= argc)
 		usage();
 
-	
+
 	if(param_packet_length > MAX_USER_PACKET_LENGTH) {
 		fprintf(stderr, "Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_packet_length);
 		return (1);
@@ -423,7 +423,7 @@ main(int argc, char *argv[])
 			ret--;
 
 			packet_buffer_t *pb = fifo[i].pbl + fifo[i].curr_pb;
-			
+
             //if the buffer is fresh we add a payload header
 			if(pb->len == 0) {
                 pb->len += sizeof(payload_header_t); //make space for a length field (will be filled later)
@@ -444,7 +444,7 @@ main(int argc, char *argv[])
 			}
 
 			pb->len += inl;
-			
+
 			//check if this packet is finished
 			if(pb->len >= param_min_packet_length) {
                 payload_header_t *ph = (payload_header_t*)pb->data;
