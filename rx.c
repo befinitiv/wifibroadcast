@@ -23,6 +23,8 @@
 #include "wifibroadcast.h"
 #include "radiotap.h"
 
+#include <limits.h>
+
 #define MAX_PACKET_LENGTH 4192
 #define MAX_USER_PACKET_LENGTH 1450
 #define MAX_DATA_OR_FEC_PACKETS_PER_BLOCK 32
