@@ -105,7 +105,7 @@ void open_and_configure_interface(const char *name, int port, monitor_interface_
 		    name, szErrbuf);
 		exit(1);
 	}
-	
+
 
 	if(pcap_setnonblock(interface->ppcap, 1, szErrbuf) < 0) {
 		fprintf(stderr, "Error setting %s to nonblocking mode: %s\n", name, szErrbuf);
@@ -495,7 +495,7 @@ void process_packet(monitor_interface_t *interface, block_buffer_t *block_buffer
 			rx_status->adapter[adapter_no].wrong_crc_cnt++;
 
 		rx_status->adapter[adapter_no].received_packet_cnt++;
-		
+
 		if(rx_status->adapter[adapter_no].received_packet_cnt % 1024 == 0) {
 			fprintf(stderr, "Signal (card %d): %ddBm\n", adapter_no, rx_status->adapter[adapter_no].current_signal_dbm);
 		}
@@ -525,7 +525,7 @@ void status_memory_init(wifibroadcast_rx_status_t *s) {
 wifibroadcast_rx_status_t *status_memory_open(void) {
 	char buf[128];
 	int fd;
-	
+
 	sprintf(buf, "/wifibroadcast_rx_status_%d", param_port);
 	fd = shm_open(buf, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
 
@@ -544,10 +544,10 @@ wifibroadcast_rx_status_t *status_memory_open(void) {
 		perror("mmap");
 		exit(1);
 	}
-	
+
 	wifibroadcast_rx_status_t *tretval = (wifibroadcast_rx_status_t*)retval;
 	status_memory_init(tretval);
-	
+
 	return tretval;
 
 }
@@ -583,19 +583,19 @@ main(int argc, char *argv[])
 		case 'p': //port
 			param_port = atoi(optarg);
 			break;
-		
-		case 'b': 
+
+		case 'b':
 			param_data_packets_per_block = atoi(optarg);
 			break;
 
-		case 'r': 
+		case 'r':
 			param_fec_packets_per_block = atoi(optarg);
 			break;
-		
+
 		case 'd':
             param_block_buffers = atoi(optarg);
 			break;
-		
+
 		case 'f': // MTU
 			param_packet_length = atoi(optarg);
 			break;
@@ -609,8 +609,8 @@ main(int argc, char *argv[])
 
 	if (optind >= argc)
 		usage();
-	
-	
+
+
 	if(param_packet_length > MAX_USER_PACKET_LENGTH) {
 		printf("Packet length is limited to %d bytes (you requested %d bytes)\n", MAX_USER_PACKET_LENGTH, param_packet_length);
 		return (1);
@@ -639,13 +639,13 @@ main(int argc, char *argv[])
 	rx_status = status_memory_open();
 	rx_status->wifi_adapter_cnt = num_interfaces;
 
-	for(;;) { 
+	for(;;) {
 		fd_set readset;
 		struct timeval to;
 
 		to.tv_sec = 0;
 		to.tv_usec = 1e5;
-	
+
 		FD_ZERO(&readset);
 		for(i=0; i<num_interfaces; ++i)
 			FD_SET(interfaces[i].selectable_fd, &readset);
